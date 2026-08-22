@@ -1,0 +1,14 @@
+# TODO: Dockerfile do cliente passageiro.
+#
+#   FROM golang:1.26-alpine AS build
+#   WORKDIR /app
+#   COPY . .
+#   RUN go build -o /cliente-passageiro ./cmd/cliente-passageiro
+#
+#   FROM alpine:latest
+#   COPY --from=build /cliente-passageiro /cliente-passageiro
+#   ENTRYPOINT ["/cliente-passageiro"]
+#
+# Lembrete: no teste final, cliente e servidor rodam em maquinas
+# distintas do laboratorio — o endereco do servidor nao pode ser
+# "localhost", deve ser configuravel (variavel de ambiente ou flag).

@@ -1,0 +1,22 @@
+# TODO: docker-compose para testes locais (servidor + clientes na mesma
+# maquina) antes de mover para maquinas separadas do laboratorio, como
+# exige o enunciado.
+#
+# Exemplo de estrutura:
+#
+# services:
+#   servidor:
+#     build:
+#       context: .
+#       dockerfile: docker/Dockerfile.servidor
+#     ports:
+#       - "8080:8080"
+#
+#   cliente-motorista:
+#     build:
+#       context: .
+#       dockerfile: docker/Dockerfile.cliente-motorista
+#     depends_on:
+#       - servidor
+#     stdin_open: true
+#     tty: true

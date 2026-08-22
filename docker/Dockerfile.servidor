@@ -1,0 +1,16 @@
+# TODO: Dockerfile do servidor central do VaiJunto.
+#
+# Sugestao de build multi-stage (binario Go e estatico, entao a imagem
+# final pode ser minima):
+#
+#   FROM golang:1.26-alpine AS build
+#   WORKDIR /app
+#   COPY . .
+#   RUN go build -o /servidor ./cmd/servidor
+#
+#   FROM alpine:latest
+#   COPY --from=build /servidor /servidor
+#   EXPOSE <porta do servidor>
+#   ENTRYPOINT ["/servidor"]
+#
+# Ajuste a porta exposta conforme a que voce definir no protocolo.
