@@ -8,6 +8,7 @@ package dominio
 // sao arestas. Buscar um itinerario de origem a destino e buscar um
 // caminho nesse grafo (BFS/DFS ja resolve, dado o volume esperado).
 //
-// Esta busca NAO deve travar nada — ela so le o estado atual e devolve
-// possibilidades. A garantia de que o assento ainda existe e
-// responsabilidade exclusiva da confirmacao (ver pacote concorrencia).
+// Esta busca deve operar sobre um SNAPSHOT de caronas passado como
+// parametro (ex: []Carona) — ela nao acessa o estado global diretamente.
+// Quem tira esse snapshot e chama esta funcao e o internal/estado, que
+// tambem garante que o resultado ainda e valido no momento da leitura.

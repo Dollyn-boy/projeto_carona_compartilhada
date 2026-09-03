@@ -1,18 +1,21 @@
 package main
 
+import (
+	"log"
+
+	"vaijunto/internal/rede"
+)
+
 // Ponto de entrada do servidor central do VaiJunto.
 //
-// TODO:
-//   1. Ler configuracao (porta de escuta, etc.) — flag ou variavel de ambiente.
-//   2. Inicializar o estado do dominio (ver internal/dominio).
-//   3. Inicializar o controle de concorrencia sobre esse estado (ver internal/concorrencia).
-//   4. Subir o listener TCP e o loop de aceitacao de conexoes
-//      (ver internal/servidor/dispatcher.go).
-//   5. Tratar encerramento gracioso do servidor (sinal SIGINT/SIGTERM), se desejar.
-//
-// Lembrete do enunciado: servidor unico, sem replicas — a queda de um
-// cliente nunca pode interromper o servico nem corromper o estado.
-
+// TODO conforme o projeto crescer:
+//   - ler porta/config de flag ou variavel de ambiente em vez do valor
+//     fixo abaixo;
+//   - inicializar internal/estado e passa-lo para internal/casosdeuso,
+//     em vez do roteador so-com-ping que existe hoje;
+//   - tratar encerramento gracioso (sinal SIGINT/SIGTERM).
 func main() {
-	// TODO: implementar o bootstrap do servidor.
+	if err := rede.Iniciar(":8080"); err != nil {
+		log.Fatal(err)
+	}
 }

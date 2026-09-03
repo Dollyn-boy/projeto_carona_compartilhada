@@ -1,18 +1,36 @@
 package main
 
+import (
+	"fmt"
+	"log"
+
+	"vaijunto/internal/clientenet"
+	"vaijunto/internal/protocolo"
+)
+
 // Ponto de entrada do cliente motorista.
 //
-// TODO:
-//   1. Conectar ao servidor (ver internal/clientenet).
-//   2. Autenticar o usuario (login).
-//   3. Exibir um menu de acoes: publicar carona, consultar caronas
-//      publicadas e passageiros confirmados por trecho, cancelar carona.
-//   4. Cada acao monta a mensagem do protocolo correspondente, envia via
-//      internal/clientenet, e exibe a resposta ao usuario.
+// Por enquanto so testa a conexao com um ping, para validar rede +
+// protocolo + roteamento de ponta a ponta.
 //
-// Este arquivo deve conter APENAS a interface (menu/prompts) — nenhuma
-// logica de rede ou de dominio deve morar aqui.
-
+// TODO: substituir por um menu real (login, publicar carona, consultar
+// caronas, cancelar carona) chamando internal/clientenet — ver README.md.
 func main() {
-	// TODO: implementar o menu do cliente motorista.
+	// Estabelece conexão 
+	conexao, err := clientenet.Conectar("localhost:8080") 
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conexao.Fechar()
+
+	resp, err := conexao.Enviar(protocolo.Requisicao{
+		Tipo:         "ping",
+		IDRequisicao: "1",
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("resposta do servidor: status=%s dados=%s\n", resp.Status, resp.Dados)
 }

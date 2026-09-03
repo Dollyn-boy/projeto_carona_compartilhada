@@ -1,7 +1,9 @@
-// Package dominio contem o modelo de dados central do VaiJunto: caronas,
-// trechos e reservas — e a logica de negocio pura, sem nenhuma
-// dependencia de rede ou protocolo. Deve ser inteiramente testavel sem
-// subir nenhum socket.
+// Package dominio contem os TIPOS e as regras de negocio PURAS do
+// VaiJunto — caronas, trechos e reservas — sem nenhuma dependencia de
+// rede, protocolo ou estado mutavel compartilhado. Deve ser inteiramente
+// testavel sem subir nenhum socket. Junto com internal/concorrencia,
+// forma a camada "Dominio + concorrencia" da arquitetura; o
+// armazenamento de fato desses dados em memoria vive em internal/estado.
 package dominio
 
 // TODO — este arquivo deve conter o tipo Carona.

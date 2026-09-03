@@ -1,8 +1,8 @@
-// Package concorrencia e a camada que garante que a confirmacao de uma
-// reserva sobre um ou mais trechos (possivelmente de caronas
-// diferentes) seja atomica e livre de condicoes de corrida — sem
-// delegar isso a nenhum banco de dados ou servico externo de
-// coordenacao (proibido pelo enunciado).
+// Package concorrencia e o MECANISMO de controle de concorrencia em si
+// (as travas/versionamento) — a segunda metade da camada "Dominio +
+// concorrencia" da arquitetura. Quem de fato o usa para proteger os
+// dados reais e o internal/estado; este pacote nao guarda nenhum dado
+// de carona/trecho/reserva, so a logica de exclusao mutua.
 package concorrencia
 
 // TODO — este arquivo deve conter o mecanismo de controle de concorrencia.

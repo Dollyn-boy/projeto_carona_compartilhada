@@ -1,17 +1,29 @@
-// Package protocolo define o contrato de mensagens trocadas entre
-// cliente e servidor — o formato deve estar espelhado em docs/protocolo.md.
-package protocolo
 
-// TODO — este arquivo deve conter os tipos das mensagens do protocolo.
-//
-// Sugestao de envelope comum para toda requisicao e resposta:
-//   Requisicao: { "tipo": "...", "id_requisicao": "...", "dados": {...} }
-//   Resposta:   { "status": "ok" | "erro", "id_requisicao": "...", "dados" | "motivo": ... }
-//
+package protocolo
+import "encoding/json"
+
+type Requisicao struct {
+    Tipo         string          `json:"tipo"`
+    IDRequisicao string          `json:"id_requisicao"`
+    Dados        json.RawMessage `json:"dados"`
+}
+
+type Resposta struct {
+    Status       string          `json:"status"`
+    IDRequisicao string          `json:"id_requisicao"`
+    Dados        json.RawMessage `json:"dados,omitempty"`
+    Motivo       string          `json:"motivo,omitempty"`
+}
+
+
+type LoginDados struct {
+    Email string `json:"email"`
+    Senha string `json:"senha"`
+}
+
+
 // Defina um tipo Go por operacao (ou um campo "dados" generico via
 // json.RawMessage/map, sua escolha), cobrindo pelo menos:
 //   login, publicar_carona, consultar_caronas, cancelar_carona,
 //   buscar_itinerarios, confirmar_reserva, consultar_reservas, cancelar_reserva
 //
-// Lembrete do enunciado: o receptor deve validar e descartar mensagens
-// malformadas — pense em como sinalizar isso na resposta de erro.

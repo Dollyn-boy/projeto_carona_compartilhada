@@ -12,4 +12,6 @@ package dominio
 // a reserva tem multiplos itens apontando para caronas distintas.
 //
 // Regra de ouro: a confirmacao de uma reserva com multiplos itens deve
-// ser atomica — ou todos os itens sao confirmados, ou nenhum e.
+// ser atomica — ou todos os itens sao confirmados, ou nenhum e. Essa
+// atomicidade e garantida por internal/estado, usando internal/concorrencia;
+// aqui fica so o tipo de dados.

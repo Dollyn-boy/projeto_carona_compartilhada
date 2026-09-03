@@ -10,6 +10,7 @@ package dominio
 // onde reservar um trajeto [i,j] exige checar (e depois decrementar)
 // todos os contadores entre i e j.
 //
-// Esta e a estrutura de dados que o pacote concorrencia vai proteger —
-// pense em como identificar um trecho de forma unica (ex: idCarona +
-// indice do trecho) para permitir travas ordenadas mais tarde.
+// O contador em si — o dado mutavel de fato — e guardado e protegido em
+// internal/estado. Aqui ficam so o tipo e as funcoes puras que operam
+// sobre um snapshot desses contadores (ex: "este trajeto cabe nesses
+// contadores?").
