@@ -1,16 +1,47 @@
 package dominio
 
-// TODO — este arquivo deve conter a estrutura de disponibilidade por trecho.
+type Cidade string
+
+// Trecho representa um trecho ELEMENTAR de uma carona: o intervalo entre
+// duas cidades ADJACENTES na rota de uma carona especifica. Para uma
+// carona com rota [A, B, C, D], existem 3 trechos elementares: A-B
+// (Indice 0), B-C (Indice 1), C-D (Indice 2).
 //
-// Para uma carona com rota [A, B, C, D], existem 3 trechos elementares:
-// A-B, B-C, C-D. Cada um tem seu proprio contador de assentos disponiveis.
+// IMPORTANTE: este struct so guarda a ESTRUTURA do trecho (de qual
+// carona, em qual posicao da rota, entre quais cidades) — ele NAO
+// guarda o contador de assentos disponiveis. Esse contador e dado
+// MUTAVEL, compartilhado entre goroutines, e por isso vive em
+// internal/estado, protegido por internal/concorrencia. Pense neste
+// struct como "a definicao do trecho", nao como "o estoque atual dele".
+
+type Trecho struct {
+	IDCarona string
+	Indice   int // posicao do trecho na rota: 0 = primeiro trecho da carona
+	Origem   Cidade
+	Destino  Cidade
+}
+
+// TrechosDaRota constroi a lista de trechos elementares a partir de uma
+// rota ordenada de cidades. Ex: TrechosDaRota("carona-1", []Cidade{"A",
+// "B", "C", "D"}) devolve os trechos A-B, B-C, C-D nessa ordem — os
+// mesmos 3 trechos do exemplo acima.
 //
-// Um passageiro que reserva de A ate C ocupa os trechos A-B e B-C
-// simultaneamente. Pense nisso como um vetor de contadores por carona,
-// onde reservar um trajeto [i,j] exige checar (e depois decrementar)
-// todos os contadores entre i e j.
-//
-// O contador em si — o dado mutavel de fato — e guardado e protegido em
-// internal/estado. Aqui ficam so o tipo e as funcoes puras que operam
-// sobre um snapshot desses contadores (ex: "este trajeto cabe nesses
-// contadores?").
+// Isso e usado tanto na hora de publicar uma carona (para saber quantos
+// contadores de assento criar em internal/estado) quanto na hora de
+// montar o grafo de busca (ver busca.go).
+func TrechosDaRota(idCarona string, rota []Cidade) []Trecho {
+	// Uma rota com N cidades tem N-1 trechos elementares. Pre-alocar a
+	// slice com essa capacidade evita realocacoes durante o append.
+	trechos := make([]Trecho, 0, len(rota)-1)
+
+	for i := 0; i < len(rota)-1; i++ {
+		trechos = append(trechos, Trecho{
+			IDCarona: idCarona,
+			Indice:   i,
+			Origem:   rota[i],
+			Destino:  rota[i+1],
+		})
+	}
+
+	return trechos
+}

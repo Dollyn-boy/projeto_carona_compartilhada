@@ -8,6 +8,14 @@ package dominio
 
 // TODO — este arquivo deve conter o tipo Carona.
 //
+
+type Carona struct {
+	Id        int
+	Motorista string
+	rota      []Cidade
+	
+}
+
 // Uma carona e publicada por um motorista e tem:
 //   - um identificador unico;
 //   - o motorista responsavel;

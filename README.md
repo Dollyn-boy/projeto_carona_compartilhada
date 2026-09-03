@@ -58,11 +58,18 @@ unico pacote que combina dados com controle de concorrencia. Essa
 fronteira e o que garante que toda leitura/escrita do estado passa pelo
 controle de concorrencia, sem excecao.
 
-## Como usar este esqueleto
+## Status atual
 
-Todos os arquivos em `internal/`, `cmd/`, `test/` e `docker/` contem
-apenas comentarios de instrucao (TODO) — nenhuma logica foi implementada
-ainda. O projeto compila do jeito que esta (`go build ./...`).
+Ja implementados de verdade (nao sao mais so TODO):
+`internal/protocolo` (envelope + framing), `internal/clientenet`,
+`internal/rede`, `internal/casosdeuso` (so a operacao `ping`),
+`cmd/servidor` e `cmd/cliente-motorista`. Isso e suficiente pra validar
+a tubulação completa com um ping — ver "Testando o ping" abaixo.
+
+Ainda TODO (so comentarios de instrucao): `internal/dominio`,
+`internal/concorrencia`, `internal/estado`, os handlers reais de
+`internal/casosdeuso` (motorista.go/passageiro.go), `cmd/cliente-passageiro`,
+`test/carga` e `docker/Dockerfile.cliente-passageiro`.
 
 Ordem sugerida de implementacao:
 
@@ -88,4 +95,69 @@ Ordem sugerida de implementacao:
 go build ./...
 go vet ./...
 go test -race ./...
+```
+
+## Testando o ping (sem Docker)
+
+O servidor fica bloqueado escutando — precisa de dois terminais:
+
+```
+# terminal 1
+go run ./cmd/servidor
+
+# terminal 2 (com o terminal 1 ainda rodando)
+go run ./cmd/cliente-motorista
+```
+
+Deve aparecer `resposta do servidor: status=ok dados="pong"`.
+
+## Rodando com Docker
+
+O cliente aceita o endereco do servidor via flag (`-servidor`, padrao
+`localhost:8080`) — isso existe justamente porque `localhost` dentro de
+um container aponta pro proprio container, nunca pro servidor rodando
+em outro lugar.
+
+### Opcao A — docker-compose (dois containers, mesma maquina)
+
+Mais simples pra testar localmente antes do laboratorio. Suba o
+servidor primeiro, confira que ele esta escutando, e so entao rode o
+cliente — assim evita a corrida de o cliente tentar conectar antes do
+servidor estar pronto:
+
+```
+docker compose up --build -d servidor
+docker compose logs servidor          # espere aparecer "servidor escutando em :8080"
+docker compose run --rm cliente-motorista
+```
+
+Dentro da rede que o compose cria, o hostname `servidor` resolve
+sozinho pro container do servico `servidor` — por isso o
+`command: ["-servidor", "servidor:8080"]` no docker-compose.yml funciona.
+
+### Opcao B — dois containers manuais, rede Docker explicita
+
+Mais proximo do que vai acontecer de verdade (maquinas fisicas
+distintas), ainda rodando na mesma maquina pra testar:
+
+```
+docker build -f docker/Dockerfile.servidor -t vaijunto-servidor .
+docker build -f docker/Dockerfile.cliente-motorista -t vaijunto-cliente-motorista .
+
+docker network create vaijunto-net
+docker run --rm -d --network vaijunto-net --name servidor -p 8080:8080 vaijunto-servidor
+docker run --rm --network vaijunto-net vaijunto-cliente-motorista -servidor servidor:8080
+```
+
+### Opcao C — maquinas fisicas separadas (o teste real do laboratorio)
+
+Sem rede Docker compartilhada nenhuma — so a porta exposta e o IP real
+da outra maquina:
+
+```
+# Maquina A (roda o servidor)
+docker run --rm -p 8080:8080 vaijunto-servidor
+
+# Maquina B (roda o cliente, apontando pro IP real da Maquina A)
+docker run --rm vaijunto-cliente-motorista -servidor 192.168.0.10:8080
 ```
