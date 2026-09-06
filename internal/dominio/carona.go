@@ -6,14 +6,12 @@
 // armazenamento de fato desses dados em memoria vive em internal/estado.
 package dominio
 
-// TODO — este arquivo deve conter o tipo Carona.
-//
-
 type Carona struct {
 	Id        int
 	Motorista string
 	rota      []Cidade
-	
+	Preco     int
+	capcidade int
 }
 
 // Uma carona e publicada por um motorista e tem:
