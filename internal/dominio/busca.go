@@ -125,3 +125,36 @@ func BuscarItinerarios(grafo GrafoItinerarios, origem, destino Cidade) []Itinera
 	// os caminhos simples ate esse limite, em vez de parar no primeiro
 	// encontrado.
 }
+
+func BuscarTodosItinerarios(grafo GrafoItinerarios, origem, destino Cidade) []Itinerario {
+	itinerarios := []Itinerario{}
+
+	// O conjunto de visitadas do caminho atual evita ciclos sem impedir que
+	// uma cidade seja usada em caminhos diferentes.
+	var dfs func(Cidade, []Trecho, map[Cidade]bool)
+	dfs = func(atual Cidade, passos []Trecho, visitadas map[Cidade]bool) {
+		if atual == destino {
+			copia := append([]Trecho(nil), passos...)
+			itinerarios = append(itinerarios, Itinerario{Passos: copia})
+			return
+		}
+
+		for _, aresta := range grafo[atual] {
+			proxima := aresta.Trecho.Destino
+			if visitadas[proxima] {
+				continue
+			}
+
+			novosPassos := append(append([]Trecho(nil), passos...), aresta.Trecho)
+			novasVisitadas := make(map[Cidade]bool, len(visitadas)+1)
+			for cidade := range visitadas {
+				novasVisitadas[cidade] = true
+			}
+			novasVisitadas[proxima] = true
+			dfs(proxima, novosPassos, novasVisitadas)
+		}
+	}
+
+	dfs(origem, nil, map[Cidade]bool{origem: true})
+	return itinerarios
+}
