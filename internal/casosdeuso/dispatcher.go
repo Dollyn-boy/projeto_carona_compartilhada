@@ -26,6 +26,24 @@ func Despachar(req protocolo.Requisicao) protocolo.Resposta {
 	switch req.Tipo {
 	case "ping":
 		return tratarPing(req)
+	case "login":
+		return tratarLogin(req)
+	case "cadastro":
+		return tratarCadastro(req)
+	case "publicar_carona":
+		return tratarPublicarCarona(req)
+	case "consultar_caronas":
+		return tratarConsultarCaronas(req)
+	case "cancelar_carona":
+		return tratarCancelarCarona(req)
+	case "buscar_itinerarios":
+		return tratarBuscarItinerarios(req)
+	case "confirmar_reserva":
+		return tratarConfirmarReserva(req)
+	case "consultar_reservas":
+		return tratarConsultarReservas(req)
+	case "cancelar_reserva":
+		return tratarCancelarReserva(req)
 	default:
 		return protocolo.Resposta{
 			Status:       "erro",
@@ -33,6 +51,14 @@ func Despachar(req protocolo.Requisicao) protocolo.Resposta {
 			Motivo:       "tipo de operacao desconhecido: " + req.Tipo,
 		}
 	}
+}
+
+func tratarLogin(req protocolo.Requisicao) protocolo.Resposta {
+	panic("unimplemented")
+}
+
+func tratarCadastro(req protocolo.Requisicao) protocolo.Resposta {
+	panic("unimplemented")
 }
 
 func tratarPing(req protocolo.Requisicao) protocolo.Resposta {
