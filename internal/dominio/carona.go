@@ -5,6 +5,9 @@
 // forma a camada "Dominio + concorrencia" da arquitetura; o
 // armazenamento de fato desses dados em memoria vive em internal/estado.
 package dominio
+import (
+	"time"
+)
 
 // Carona e publicada por um motorista e tem:
 //   - Id: identificador unico;
@@ -36,4 +39,5 @@ type Carona struct {
 	Rota       []Cidade
 	Preco      int
 	Capacidade int
+	Data time.Time
 }

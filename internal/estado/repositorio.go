@@ -12,7 +12,7 @@ package estado
 import (
 	"fmt"
 	"strconv"
-
+	"time"
 	"vaijunto/internal/concorrencia"
 	"vaijunto/internal/dominio"
 )
@@ -47,12 +47,16 @@ func NovoRepositorio() *Repositorio {
 
 // PublicarCarona cria uma nova carona e os contadores de assento (um
 // por trecho elementar da rota, todos comecando em "capacidade").
-func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, capacidade int, preco int) (dominio.Carona, error) {
+func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, capacidade int, preco int, data time.Time) (dominio.Carona, error) {
 	if len(rota) < 2 {
 		return dominio.Carona{}, fmt.Errorf("rota precisa de pelo menos 2 cidades, veio %d", len(rota))
 	}
 	if capacidade <= 0 {
 		return dominio.Carona{}, fmt.Errorf("capacidade precisa ser maior que zero")
+	}
+
+	if data.Before(time.Now()) {
+		return dominio.Carona{}, fmt.Errorf("data da carona não pode estar no passado")
 	}
 
 	var carona dominio.Carona
@@ -67,6 +71,7 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 			Rota:       rota,
 			Preco:      preco,
 			Capacidade: capacidade,
+			Data:       data,
 		}
 
 		// Um contador por trecho elementar — dominio.TrechosDaRota so e
@@ -90,7 +95,7 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 // ConsultarCaronas devolve as caronas publicadas por um motorista.
 //
 // TODO (nao implementado ainda): o comentario original pedia tambem "os
-// passageiros confirmados em cada trecho" — isso exige cruzar com
+// passageiros confirmaedos em cada trcho" — isso exige cruzar com
 // r.reservas filtrando pelas que referenciam cada carona. Deixei so a
 // lista de caronas por enquanto; e um bom proximo passo.
 func (r *Repositorio) ConsultarCaronas(motorista string) ([]dominio.Carona, error) {
@@ -145,6 +150,13 @@ func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]domin
 		for chave, carona := range r.caronas {
 			trechos := dominio.TrechosDaRota(chave, carona.Rota)
 			contadores := r.assentos[chave]
+
+			data_carona := carona.Data
+
+			// Ignora caronas que já passaram
+			if data_carona.Before(time.Now()) {
+				continue
+			}
 
 			for _, trecho := range trechos {
 				assentosLivres := contadores[trecho.Indice]

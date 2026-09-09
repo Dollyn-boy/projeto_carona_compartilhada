@@ -2,6 +2,7 @@ package estado
 
 import (
 	"testing"
+	"time"
 	"vaijunto/internal/dominio"
 )
 
@@ -20,8 +21,18 @@ import (
 func TestPublicarCarona(t *testing.T) {
 	repo := NovoRepositorio()
 	rota := []dominio.Cidade{"A", "B", "C"}
+	data := time.Date(
+		2026,           // ano
+		time.September, // mês
+		15,             // dia
+		14,             // hora
+		30,             // minuto
+		0,              // segundo
+		0,              // nanossegundo
+		time.Local,     // localização
+	)
 
-	carona, err := repo.PublicarCarona("motorista1", rota, 3, 10)
+	carona, err := repo.PublicarCarona("motorista1", rota, 3, 10, data)
 
 	if err != nil {
 		t.Fatalf("erro inesperado ao publicar carona: %v", err)
@@ -51,6 +62,17 @@ func TestPublicarCarona(t *testing.T) {
 func TestBuscarItinerarios(t *testing.T) {
 	r := NovoRepositorio()
 
+	data := time.Date(
+		2026,
+		time.September,
+		15,
+		14,
+		30,
+		0,
+		0,
+		time.Local,
+	)
+
 	if _, err := r.PublicarCarona(
 		"Joao",
 		[]dominio.Cidade{
@@ -59,6 +81,7 @@ func TestBuscarItinerarios(t *testing.T) {
 		},
 		3,
 		20,
+		data,
 	); err != nil {
 		t.Fatalf("erro inesperado ao publicar a carona de Joao: %v", err)
 	}
@@ -71,6 +94,7 @@ func TestBuscarItinerarios(t *testing.T) {
 		},
 		3,
 		30,
+		data,
 	); err != nil {
 		t.Fatalf("erro inesperado ao publicar a carona de Maria: %v", err)
 	}
@@ -78,6 +102,7 @@ func TestBuscarItinerarios(t *testing.T) {
 	itinerarios, err := r.BuscarItinerarios(
 		"Feira de Santana",
 		"Salvador",
+		// data,  // se você também alterou BuscarItinerarios para receber data
 	)
 
 	if err != nil {
