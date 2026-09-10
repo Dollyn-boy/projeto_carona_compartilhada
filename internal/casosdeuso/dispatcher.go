@@ -6,7 +6,8 @@ package casosdeuso
 
 import (
 	"encoding/json"
-
+	"vaijunto/internal/dominio"
+	"vaijunto/internal/estado"
 	"vaijunto/internal/protocolo"
 )
 
@@ -22,7 +23,22 @@ import (
 // Por enquanto só existe "ping" — serve para validar a tubulação
 // completa (rede + protocolo + roteamento) antes de qualquer lógica de
 // negócio real.
-func Despachar(req protocolo.Requisicao) protocolo.Resposta {
+// Despachar decide o que fazer com uma requisição já parseada, com base
+// em req.Tipo, e devolve a resposta correspondente.
+//
+// CORRECAO: agora recebe *estado.Repositorio como parâmetro — antes não
+// havia NENHUMA forma de um handler chegar até o estado real do
+// servidor (nem internal/rede nem cmd/servidor criavam um Repositorio).
+// Esse repo é criado UMA VEZ em cmd/servidor/main.go e repassado através
+// de rede.Iniciar -> tratarConexao -> aqui, sempre o MESMO ponteiro —
+// é por isso que uma carona publicada por uma conexão aparece pra
+// consultas feitas por outra conexão.
+//
+// TODO: quando login/cadastro autenticarem de verdade, esta função
+// provavelmente vai precisar receber também uma sessão da conexão (ver
+// internal/rede) para saber quem está autenticado.
+
+func Despachar(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
 	switch req.Tipo {
 	case "ping":
 		return tratarPing(req)
@@ -31,25 +47,62 @@ func Despachar(req protocolo.Requisicao) protocolo.Resposta {
 	case "cadastro":
 		return tratarCadastro(req)
 	case "publicar_carona":
-		return tratarPublicarCarona(req)
+		return tratarPublicarCarona(repo, req)
 	case "consultar_caronas":
-		return tratarConsultarCaronas(req)
+		return tratarConsultarCaronas(repo, req)
 	case "cancelar_carona":
-		return tratarCancelarCarona(req)
+		return tratarCancelarCarona(repo, req)
 	case "buscar_itinerarios":
-		return tratarBuscarItinerarios(req)
+		return tratarBuscarItinerarios(repo, req)
 	case "confirmar_reserva":
-		return tratarConfirmarReserva(req)
+		return tratarConfirmarReserva(repo, req)
 	case "consultar_reservas":
-		return tratarConsultarReservas(req)
+		return tratarConsultarReservas(repo, req)
 	case "cancelar_reserva":
-		return tratarCancelarReserva(req)
+		return tratarCancelarReserva(repo, req)
 	default:
 		return protocolo.Resposta{
 			Status:       "erro",
 			IDRequisicao: req.IDRequisicao,
 			Motivo:       "tipo de operacao desconhecido: " + req.Tipo,
 		}
+	}
+}
+
+// ============================================================================
+// Helpers compartilhados por motorista.go e passageiro.go (mesmo pacote)
+// ============================================================================
+
+// ok monta uma Resposta de sucesso, serializando "dados" (qualquer
+// struct de protocolo, ex: protocolo.CaronaResposta) para JSON.
+func ok(req protocolo.Requisicao, dados any) protocolo.Resposta {
+	bytes, err := json.Marshal(dados)
+	if err != nil {
+		return erro(req, "falha ao montar resposta: "+err.Error())
+	}
+	return protocolo.Resposta{Status: "ok", IDRequisicao: req.IDRequisicao, Dados: bytes}
+}
+
+// erro monta uma Resposta de erro com o motivo informado.
+func erro(req protocolo.Requisicao, motivo string) protocolo.Resposta {
+	return protocolo.Resposta{Status: "erro", IDRequisicao: req.IDRequisicao, Motivo: motivo}
+}
+
+// caronaParaResposta converte o tipo interno dominio.Carona para o tipo
+// de protocolo CaronaResposta (serializavel, sem expor dominio direto
+// no fio).
+func caronaParaResposta(c dominio.Carona) protocolo.CaronaResposta {
+	rota := make([]string, len(c.Rota))
+	for i, cidade := range c.Rota {
+		rota[i] = string(cidade)
+	}
+	return protocolo.CaronaResposta{
+		ID:         c.Id,
+		Motorista:  c.Motorista,
+		Rota:       rota,
+		Capacidade: c.Capacidade,
+		Preco:      c.Preco,
+		Data:       c.Data.Format("2006-01-02"),
 	}
 }
 

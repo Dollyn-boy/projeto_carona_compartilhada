@@ -14,13 +14,21 @@ import (
 	"net"
 
 	"vaijunto/internal/casosdeuso"
+	"vaijunto/internal/estado"
 	"vaijunto/internal/protocolo"
 )
 
 // Iniciar sobe o listener TCP no endereço informado (ex: ":8080") e
 // entra no loop de aceitação de conexões. Bloqueia até o listener falhar
 // ou ser fechado.
-func Iniciar(endereco string) error {
+//
+// CORRECAO: agora recebe *estado.Repositorio e repassa para cada
+// conexão. Antes não existia NENHUMA forma de casosdeuso.Despachar
+// chegar até o estado real — este é o parâmetro que fecha essa lacuna.
+// O mesmo ponteiro de repo é compartilhado por TODAS as conexões
+// aceitas (é o que faz uma carona publicada numa conexão aparecer pra
+// consultas feitas por outra).
+func Iniciar(endereco string, repo *estado.Repositorio) error {
 	listener, err := net.Listen("tcp", endereco)
 	if err != nil {
 		return fmt.Errorf("falha ao escutar em %s: %w", endereco, err)
@@ -36,7 +44,7 @@ func Iniciar(endereco string) error {
 			continue
 		}
 
-		go tratarConexao(conn)
+		go tratarConexao(conn, repo)
 	}
 }
 
@@ -44,7 +52,7 @@ func Iniciar(endereco string) error {
 // queda de um cliente nunca afeta os demais. O bufio.Reader é criado uma
 // única vez aqui e reaproveitado em todo o loop, pelo mesmo motivo
 // explicado em internal/clientenet.
-func tratarConexao(conn net.Conn) {
+func tratarConexao(conn net.Conn, repo *estado.Repositorio) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
@@ -58,7 +66,7 @@ func tratarConexao(conn net.Conn) {
 			return
 		}
 
-		resp := casosdeuso.Despachar(req)
+		resp := casosdeuso.Despachar(repo, req)
 
 		if err := protocolo.EscreverMensagem(conn, resp); err != nil {
 			log.Printf("erro ao enviar resposta: %v", err)
