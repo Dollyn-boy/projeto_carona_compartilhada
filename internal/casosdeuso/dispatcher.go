@@ -54,11 +54,21 @@ func Despachar(req protocolo.Requisicao) protocolo.Resposta {
 }
 
 func tratarLogin(req protocolo.Requisicao) protocolo.Resposta {
-	panic("unimplemented")
+	dados, _ := json.Marshal("login ok")
+	return protocolo.Resposta{
+		Status:       "ok",
+		IDRequisicao: req.IDRequisicao,
+		Dados:        dados,
+	}
 }
 
 func tratarCadastro(req protocolo.Requisicao) protocolo.Resposta {
-	panic("unimplemented")
+	dados, _ := json.Marshal("cadastro ok")
+	return protocolo.Resposta{
+		Status:       "ok",
+		IDRequisicao: req.IDRequisicao,
+		Dados:        dados,
+	}
 }
 
 func tratarPing(req protocolo.Requisicao) protocolo.Resposta {
