@@ -135,8 +135,7 @@ func confirmarReserva(conexao *clientenet.Conexao, leitor *bufio.Reader, passage
 	}
 
 	dados, _ := json.Marshal(protocolo.ConfirmarReservaDados{
-		Passageiro: passageiro,
-		Trechos:    ultimaBusca[indice].Trechos,
+		Trechos: ultimaBusca[indice].Trechos,
 	})
 
 	resp, err := conexao.Enviar(protocolo.Requisicao{
@@ -164,7 +163,7 @@ func confirmarReserva(conexao *clientenet.Conexao, leitor *bufio.Reader, passage
 }
 
 func consultarReservas(conexao *clientenet.Conexao, passageiro string) {
-	dados, _ := json.Marshal(protocolo.ConsultarReservasDados{Passageiro: passageiro})
+	dados, _ := json.Marshal(protocolo.ConsultarReservasDados{})
 
 	resp, err := conexao.Enviar(protocolo.Requisicao{
 		Tipo:         "consultar_reservas",

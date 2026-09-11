@@ -78,7 +78,6 @@ func publicarCarona(conexao *clientenet.Conexao, leitor *bufio.Reader, motorista
 	data := lerLinha(leitor, "Data (AAAA-MM-DD): ")
 
 	dados, _ := json.Marshal(protocolo.PublicarCaronaDados{
-		Motorista:  motorista,
 		Rota:       rota,
 		Capacidade: capacidade,
 		Preco:      preco,
@@ -109,7 +108,7 @@ func publicarCarona(conexao *clientenet.Conexao, leitor *bufio.Reader, motorista
 }
 
 func consultarCaronas(conexao *clientenet.Conexao, motorista string) {
-	dados, _ := json.Marshal(protocolo.ConsultarCaronasDados{Motorista: motorista})
+	dados, _ := json.Marshal(protocolo.ConsultarCaronasDados{})
 
 	resp, err := conexao.Enviar(protocolo.Requisicao{
 		Tipo:         "consultar_caronas",
