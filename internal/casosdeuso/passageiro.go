@@ -87,10 +87,8 @@ func tratarBuscarItinerarios(repo *estado.Repositorio, req protocolo.Requisicao)
 	return ok(req, resposta)
 }
 
-// tratarConfirmarReserva: reconstroi o dominio.Itinerario a partir dos
-// trechos que o cliente reenviou e chama repo.ConfirmarReserva — e ali,
-// nao aqui, que a atomicidade "tudo ou nada" e garantida.
-func tratarConfirmarReserva(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
+// tratarConfirmarReserva agora usa o usuario da sessão
+func tratarConfirmarReserva(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
 	var dados protocolo.ConfirmarReservaDados
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
@@ -98,7 +96,8 @@ func tratarConfirmarReserva(repo *estado.Repositorio, req protocolo.Requisicao) 
 
 	itinerario := dadosParaItinerario(dados.Trechos)
 
-	reserva, err := repo.ConfirmarReserva(dados.Passageiro, itinerario)
+	// SEGURANÇA: Usamos usuario em vez de dados.Passageiro
+	reserva, err := repo.ConfirmarReserva(usuario, itinerario)
 	if err != nil {
 		return erro(req, err.Error())
 	}
@@ -106,13 +105,10 @@ func tratarConfirmarReserva(repo *estado.Repositorio, req protocolo.Requisicao) 
 	return ok(req, reservaParaResposta(reserva))
 }
 
-func tratarConsultarReservas(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
-	var dados protocolo.ConsultarReservasDados
-	if err := json.Unmarshal(req.Dados, &dados); err != nil {
-		return erro(req, "dados invalidos: "+err.Error())
-	}
-
-	reservas, err := repo.ConsultarReservas(dados.Passageiro)
+// tratarConsultarReservas agora busca reservas atreladas à sessão
+func tratarConsultarReservas(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
+	// SEGURANÇA: Busca apenas as reservas do usuário logado
+	reservas, err := repo.ConsultarReservas(usuario)
 	if err != nil {
 		return erro(req, err.Error())
 	}
@@ -125,13 +121,14 @@ func tratarConsultarReservas(repo *estado.Repositorio, req protocolo.Requisicao)
 	return ok(req, resposta)
 }
 
-func tratarCancelarReserva(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
+func tratarCancelarReserva(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
 	var dados protocolo.CancelarReservaDados
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
 	}
 
-	if err := repo.CancelarReserva(dados.IDReserva); err != nil {
+	// IDEALMENTE: Atualize para repo.CancelarReserva(dados.IDReserva, usuario)
+	if err := repo.CancelarReserva(dados.IDReserva, usuario); err != nil {
 		return erro(req, err.Error())
 	}
 

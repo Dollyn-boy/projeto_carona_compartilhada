@@ -9,11 +9,8 @@ import (
 	"vaijunto/internal/protocolo"
 )
 
-// tratarPublicarCarona: desserializa PublicarCaronaDados, converte os
-// tipos do protocolo (string, []string) para os tipos de dominio
-// (dominio.Cidade, time.Time), chama repo.PublicarCarona, e devolve a
-// carona criada.
-func tratarPublicarCarona(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
+// tratarPublicarCarona agora recebe usuario da Sessão
+func tratarPublicarCarona(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
 	var dados protocolo.PublicarCaronaDados
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
@@ -29,7 +26,8 @@ func tratarPublicarCarona(repo *estado.Repositorio, req protocolo.Requisicao) pr
 		return erro(req, "data invalida (use o formato AAAA-MM-DD): "+err.Error())
 	}
 
-	carona, err := repo.PublicarCarona(dados.Motorista, rota, dados.Capacidade, dados.Preco, data)
+	// SEGURANÇA: Usamos o usuario da sessão em vez de dados.Motorista!
+	carona, err := repo.PublicarCarona(usuario, rota, dados.Capacidade, dados.Preco, data)
 	if err != nil {
 		return erro(req, err.Error())
 	}
@@ -37,15 +35,13 @@ func tratarPublicarCarona(repo *estado.Repositorio, req protocolo.Requisicao) pr
 	return ok(req, caronaParaResposta(carona))
 }
 
-// tratarConsultarCaronas: leitura simples, so passa o filtro de
-// motorista adiante e converte o resultado.
-func tratarConsultarCaronas(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
-	var dados protocolo.ConsultarCaronasDados
-	if err := json.Unmarshal(req.Dados, &dados); err != nil {
-		return erro(req, "dados invalidos: "+err.Error())
-	}
+// tratarConsultarCaronas agora busca apenas as caronas do usuário logado
+func tratarConsultarCaronas(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
+	// Nota: Como não precisamos mais do dados.Motorista vindo do cliente,
+	// você pode até ignorar o payload do cliente aqui se quiser.
 
-	caronas, err := repo.ConsultarCaronas(dados.Motorista)
+	// SEGURANÇA: Buscamos as caronas usando o ID da sessão
+	caronas, err := repo.ConsultarCaronas(usuario)
 	if err != nil {
 		return erro(req, err.Error())
 	}
@@ -58,15 +54,16 @@ func tratarConsultarCaronas(repo *estado.Repositorio, req protocolo.Requisicao) 
 	return ok(req, resposta)
 }
 
-// tratarCancelarCarona: repassa o ID para repo.CancelarCarona; o erro
-// (ex: "carona nao encontrada") já vem pronto de internal/estado.
-func tratarCancelarCarona(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
+// tratarCancelarCarona repassa o usuario para validar autorização
+func tratarCancelarCarona(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
 	var dados protocolo.CancelarCaronaDados
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
 	}
 
-	if err := repo.CancelarCarona(dados.IDCarona); err != nil {
+	// IDEALMENTE: Atualize repo.CancelarCarona para receber (dados.IDCarona, usuarioID)
+	// para garantir que o usuário não cancele a carona de outra pessoa!
+	if err := repo.CancelarCarona(dados.IDCarona, usuario); err != nil {
 		return erro(req, err.Error())
 	}
 

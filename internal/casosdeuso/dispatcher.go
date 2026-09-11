@@ -6,6 +6,7 @@ package casosdeuso
 
 import (
 	"encoding/json"
+	"time"
 	"vaijunto/internal/dominio"
 	"vaijunto/internal/estado"
 	"vaijunto/internal/protocolo"
@@ -38,35 +39,124 @@ import (
 // provavelmente vai precisar receber também uma sessão da conexão (ver
 // internal/rede) para saber quem está autenticado.
 
-func Despachar(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
+func Despachar(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
+
+	// 1. CONTROLE DE EXPIRAÇÃO (Exemplo: 30 minutos inativo)
+	limiteInatividade := 30 * time.Minute
+	if sessao.Autenticado {
+		if time.Since(sessao.UltimaAtividade) > limiteInatividade {
+			// Tempo estourou: desloga o usuário forçadamente
+			sessao.Autenticado = false
+			sessao.Usuario = ""
+			return erro(req, "Sessão expirada por inatividade. Faça login novamente.")
+		}
+		// Atualiza o relógio a cada requisição válida
+		sessao.UltimaAtividade = time.Now()
+	}
+	// 2. ROTAS PÚBLICAS (Qualquer um pode acessar sem estar logado)
 	switch req.Tipo {
 	case "ping":
 		return tratarPing(req)
-	case "login":
-		return tratarLogin(req)
 	case "cadastro":
-		return tratarCadastro(req)
+		return tratarCadastro(repo, req)
+	case "login":
+		// Passamos o ponteiro da sessão para o login poder alterá-la!
+		return tratarLogin(repo, sessao, req)
+	case "logout":
+		return tratarLogout(sessao, req)
+	}
+
+	// 3. BARREIRA DE AUTENTICAÇÃO
+	// Se chegou aqui e não está autenticado, é porque tentou acessar uma rota privada.
+	if !sessao.Autenticado {
+		return erro(req, "Acesso negado: faça login primeiro")
+	}
+
+	// 4. ROTAS PRIVADAS (Somente autenticados passam daqui)
+	switch req.Tipo {
 	case "publicar_carona":
-		return tratarPublicarCarona(repo, req)
+		// Sugestão: Passe o sessao.Usuario para a função saber QUEM está publicando.
+		// Assim você não confia no ID que vem do payload do cliente, que pode ser forjado.
+		return tratarPublicarCarona(repo, sessao.Usuario, req)
+
 	case "consultar_caronas":
-		return tratarConsultarCaronas(repo, req)
+		return tratarConsultarCaronas(repo, sessao.Usuario, req)
+
 	case "cancelar_carona":
-		return tratarCancelarCarona(repo, req)
+		return tratarCancelarCarona(repo, sessao.Usuario, req)
+
 	case "buscar_itinerarios":
 		return tratarBuscarItinerarios(repo, req)
+
 	case "confirmar_reserva":
-		return tratarConfirmarReserva(repo, req)
+		return tratarConfirmarReserva(repo, sessao.Usuario, req)
+
 	case "consultar_reservas":
-		return tratarConsultarReservas(repo, req)
+		return tratarConsultarReservas(repo, sessao.Usuario, req)
+
 	case "cancelar_reserva":
-		return tratarCancelarReserva(repo, req)
+		return tratarCancelarReserva(repo, sessao.Usuario, req)
+
 	default:
-		return protocolo.Resposta{
-			Status:       "erro",
-			IDRequisicao: req.IDRequisicao,
-			Motivo:       "tipo de operacao desconhecido: " + req.Tipo,
-		}
+		return erro(req, "tipo de operacao desconhecido ou invalido: "+req.Tipo)
 	}
+}
+
+// ============================================================================
+// HANDLERS PÚBLICOS (Login, Logout, etc)
+// ============================================================================
+
+func tratarLogin(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
+	var dados protocolo.LoginDados
+	if err := json.Unmarshal(req.Dados, &dados); err != nil {
+		return erro(req, "dados invalidos: "+err.Error())
+	}
+
+	// Verifica se o usuário existe no repositório em memória
+	// (Você precisará criar esse método no seu internal/estado)
+	if !repo.VerificarUsuario(dados.Usuario, dados.Senha) {
+		return erro(req, "usuario ou senha invalidos")
+	}
+
+	// =========================================================
+	// O SEGREDO ESTÁ AQUI: Atualizamos a sessão desta conexão TCP!
+	// =========================================================
+	sessao.Autenticado = true
+	sessao.Usuario = dados.Usuario
+	sessao.UltimaAtividade = time.Now()
+
+	return ok(req, map[string]string{"mensagem": "bem-vindo, " + dados.Usuario})
+}
+
+func tratarLogout(sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
+	if !sessao.Autenticado {
+		return erro(req, "Você já está desconectado")
+	}
+
+	// Limpa a sessão
+	sessao.Autenticado = false
+	sessao.Usuario = ""
+
+	return ok(req, "logout ok")
+}
+
+func tratarCadastro(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
+	var dados protocolo.CadastroDados
+	if err := json.Unmarshal(req.Dados, &dados); err != nil {
+		return erro(req, "dados invalidos: "+err.Error())
+	}
+
+	if dados.Usuario == "" {
+		return erro(req, "nome de usuario nao pode ser vazio")
+	}
+
+	// Chama o repositório em memória para salvar o usuário
+	// (Você precisará criar esse método no seu internal/estado)
+	if err := repo.CadastrarUsuario(dados.Usuario, dados.Senha); err != nil {
+		return erro(req, err.Error()) // ex: "usuário já existe"
+	}
+
+	return ok(req, map[string]string{"mensagem": "cadastro realizado com sucesso"})
 }
 
 // ============================================================================
@@ -103,24 +193,6 @@ func caronaParaResposta(c dominio.Carona) protocolo.CaronaResposta {
 		Capacidade: c.Capacidade,
 		Preco:      c.Preco,
 		Data:       c.Data.Format("2006-01-02"),
-	}
-}
-
-func tratarLogin(req protocolo.Requisicao) protocolo.Resposta {
-	dados, _ := json.Marshal("login ok")
-	return protocolo.Resposta{
-		Status:       "ok",
-		IDRequisicao: req.IDRequisicao,
-		Dados:        dados,
-	}
-}
-
-func tratarCadastro(req protocolo.Requisicao) protocolo.Resposta {
-	dados, _ := json.Marshal("cadastro ok")
-	return protocolo.Resposta{
-		Status:       "ok",
-		IDRequisicao: req.IDRequisicao,
-		Dados:        dados,
 	}
 }
 

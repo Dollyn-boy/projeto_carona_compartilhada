@@ -28,6 +28,7 @@ type Repositorio struct {
 	caronas  map[string]*dominio.Carona  // chave: strconv.Itoa(carona.Id)
 	assentos map[string][]int            // mesma chave; indexado por Trecho.Indice
 	reservas map[string]*dominio.Reserva // chave: strconv.Itoa(reserva.Id)
+	usuarios map[string]*dominio.Usuario // chave: usuario.Usuario
 
 	// Geradores simples de ID sequencial. So sao alterados dentro de
 	// ComEscrita, entao nao precisam de sync/atomic separado.
@@ -132,12 +133,26 @@ func (r *Repositorio) ConsultarCaronas(motorista string) ([]dominio.Carona, erro
 // combinado), o assento e devolvido antes de apagar a reserva — senao
 // ele ficaria preso para sempre, ja que a reserva inteira esta sendo
 // removida.
-func (r *Repositorio) CancelarCarona(idCarona int) error {
+// CancelarCarona remove uma carona e seus contadores de assento, e
+// cancela em cascata qualquer reserva que a referencie.
+//
+// SEGURANÇA: Exige o ID do motorista para garantir que apenas o dono
+// da carona possa cancelá-la.
+func (r *Repositorio) CancelarCarona(idCarona int, motorista string) error {
 	chave := strconv.Itoa(idCarona)
 
 	return r.trava.ComEscrita(func() error {
-		if _, existe := r.caronas[chave]; !existe {
+		// Agora precisamos pegar o ponteiro da carona para checar quem é o dono
+		carona, existe := r.caronas[chave]
+		if !existe {
 			return fmt.Errorf("carona %d nao encontrada", idCarona)
+		}
+
+		// ==========================================
+		// BARREIRA DE AUTORIZAÇÃO
+		// ==========================================
+		if carona.Motorista != motorista {
+			return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a carona %d", idCarona)
 		}
 
 		for chaveReserva, reserva := range r.reservas {
@@ -147,9 +162,7 @@ func (r *Repositorio) CancelarCarona(idCarona int) error {
 					tocaEssaCarona = true
 					continue
 				}
-				// Devolve o assento nas OUTRAS caronas do itinerario —
-				// a de idCarona nem precisa, seu contador vai ser
-				// apagado inteiro logo abaixo mesmo.
+				// Devolve o assento nas OUTRAS caronas do itinerario
 				if contadores, ok := r.assentos[strconv.Itoa(item.CaronaID)]; ok && item.Trecho.Indice < len(contadores) {
 					contadores[item.Trecho.Indice]++
 				}
@@ -335,13 +348,25 @@ func (r *Repositorio) ConsultarReservas(passageiro string) ([]dominio.Reserva, e
 // ocupava para os contadores correspondentes. Esquecer de devolver o
 // assento seria um jeito facil de o servidor "vazar" capacidade real ao
 // longo de uma execucao longa.
-func (r *Repositorio) CancelarReserva(idReserva int) error {
+// CancelarReserva remove uma reserva E devolve os assentos que ela
+// ocupava para os contadores correspondentes.
+//
+// SEGURANÇA: Exige o ID do passageiro para garantir que apenas o dono
+// da reserva possa cancelá-la.
+func (r *Repositorio) CancelarReserva(idReserva int, passageiro string) error {
 	chave := strconv.Itoa(idReserva)
 
 	return r.trava.ComEscrita(func() error {
 		reserva, existe := r.reservas[chave]
 		if !existe {
 			return fmt.Errorf("reserva %d nao encontrada", idReserva)
+		}
+
+		// ==========================================
+		// BARREIRA DE AUTORIZAÇÃO
+		// ==========================================
+		if reserva.Passageiro != passageiro {
+			return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a reserva %d", idReserva)
 		}
 
 		for _, item := range reserva.Itens {
@@ -354,4 +379,39 @@ func (r *Repositorio) CancelarReserva(idReserva int) error {
 		delete(r.reservas, chave)
 		return nil
 	})
+}
+
+func (r *Repositorio) CadastrarUsuario(usuario string, senha string) error {
+	return r.trava.ComEscrita(func() error {
+		if _, existe := r.usuarios[usuario]; existe {
+			return fmt.Errorf("usuario %s ja cadastrado", usuario)
+		}
+
+		r.usuarios[usuario] = &dominio.Usuario{Usuario: usuario, SenhaHash: dominio.HashSenha(senha)}
+		return nil
+	})
+}
+
+func (r *Repositorio) AutenticarUsuario(usuario string, senha string) (bool, error) {
+	autenticado := false
+	err := r.trava.ComLeitura(func() error {
+		usuarioObj, existe := r.usuarios[usuario]
+		if !existe {
+			return fmt.Errorf("usuario %s nao encontrado", usuario)
+		}
+		if usuarioObj.SenhaHash != dominio.HashSenha(senha) {
+			return fmt.Errorf("senha incorreta para o usuario %s", usuario)
+		}
+		autenticado = true
+		return nil
+	})
+	return autenticado, err
+}
+
+func (r *Repositorio) VerificarUsuario(usuario string, senha string) bool {
+	autenticado, err := r.AutenticarUsuario(usuario, senha)
+	if err != nil {
+		return false
+	}
+	return autenticado
 }
