@@ -112,9 +112,8 @@ func tratarLogin(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisi
 		return erro(req, "dados invalidos: "+err.Error())
 	}
 
-	// Verifica se o usuário existe no repositório em memória
-	// (Você precisará criar esse método no seu internal/estado)
-	if !repo.VerificarUsuario(dados.Usuario, dados.Senha) {
+	autenticado, role, err := repo.AutenticarUsuario(dados.Usuario, dados.Senha)
+	if err != nil || !autenticado {
 		return erro(req, "usuario ou senha invalidos")
 	}
 
@@ -123,9 +122,13 @@ func tratarLogin(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisi
 	// =========================================================
 	sessao.Autenticado = true
 	sessao.Usuario = dados.Usuario
+	sessao.Role = role
 	sessao.UltimaAtividade = time.Now()
 
-	return ok(req, map[string]string{"mensagem": "bem-vindo, " + dados.Usuario})
+	return ok(req, protocolo.LoginResposta{
+		Mensagem: "bem-vindo, " + dados.Usuario,
+		Role:     role,
+	})
 }
 
 func tratarLogout(sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
@@ -149,10 +152,11 @@ func tratarCadastro(repo *estado.Repositorio, req protocolo.Requisicao) protocol
 	if dados.Usuario == "" {
 		return erro(req, "nome de usuario nao pode ser vazio")
 	}
+	if dados.Role != "m" && dados.Role != "p" {
+		return erro(req, "role deve ser 'm' (motorista) ou 'p' (passageiro)")
+	}
 
-	// Chama o repositório em memória para salvar o usuário
-	// (Você precisará criar esse método no seu internal/estado)
-	if err := repo.CadastrarUsuario(dados.Usuario, dados.Senha); err != nil {
+	if err := repo.CadastrarUsuario(dados.Usuario, dados.Senha, dados.Role); err != nil {
 		return erro(req, err.Error()) // ex: "usuário já existe"
 	}
 

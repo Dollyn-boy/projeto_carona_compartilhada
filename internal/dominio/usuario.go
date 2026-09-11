@@ -8,6 +8,7 @@ import (
 type Usuario struct {
 	Usuario   string
 	SenhaHash string
+	Role      string
 }
 
 func HashSenha(senha string) string {

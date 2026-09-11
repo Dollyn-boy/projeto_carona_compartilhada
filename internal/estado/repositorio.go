@@ -43,6 +43,7 @@ func NovoRepositorio() *Repositorio {
 		caronas:  make(map[string]*dominio.Carona),
 		assentos: make(map[string][]int),
 		reservas: make(map[string]*dominio.Reserva),
+		usuarios: make(map[string]*dominio.Usuario),
 	}
 }
 
@@ -381,19 +382,23 @@ func (r *Repositorio) CancelarReserva(idReserva int, passageiro string) error {
 	})
 }
 
-func (r *Repositorio) CadastrarUsuario(usuario string, senha string) error {
+func (r *Repositorio) CadastrarUsuario(usuario string, senha string, role string) error {
 	return r.trava.ComEscrita(func() error {
 		if _, existe := r.usuarios[usuario]; existe {
 			return fmt.Errorf("usuario %s ja cadastrado", usuario)
 		}
 
-		r.usuarios[usuario] = &dominio.Usuario{Usuario: usuario, SenhaHash: dominio.HashSenha(senha)}
+		r.usuarios[usuario] = &dominio.Usuario{Usuario: usuario, SenhaHash: dominio.HashSenha(senha), Role: role}
 		return nil
 	})
 }
 
-func (r *Repositorio) AutenticarUsuario(usuario string, senha string) (bool, error) {
+// AutenticarUsuario confere usuario/senha e devolve o Role cadastrado
+// (motorista ou passageiro) para quem chamou poder decidir que menu
+// mostrar, sem precisar perguntar de novo a cada login.
+func (r *Repositorio) AutenticarUsuario(usuario string, senha string) (bool, string, error) {
 	autenticado := false
+	var role string
 	err := r.trava.ComLeitura(func() error {
 		usuarioObj, existe := r.usuarios[usuario]
 		if !existe {
@@ -403,13 +408,16 @@ func (r *Repositorio) AutenticarUsuario(usuario string, senha string) (bool, err
 			return fmt.Errorf("senha incorreta para o usuario %s", usuario)
 		}
 		autenticado = true
+		role = usuarioObj.Role
 		return nil
 	})
-	return autenticado, err
+	return autenticado, role, err
 }
 
+// VerificarUsuario mantido por compatibilidade com quem so precisa do
+// booleano — mas prefira AutenticarUsuario se voce tambem precisa do Role.
 func (r *Repositorio) VerificarUsuario(usuario string, senha string) bool {
-	autenticado, err := r.AutenticarUsuario(usuario, senha)
+	autenticado, _, err := r.AutenticarUsuario(usuario, senha)
 	if err != nil {
 		return false
 	}

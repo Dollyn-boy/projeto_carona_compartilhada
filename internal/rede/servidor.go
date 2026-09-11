@@ -7,7 +7,9 @@ package rede
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 
@@ -62,7 +64,9 @@ func tratarConexao(conn net.Conn, repo *estado.Repositorio) {
 	for {
 		var req protocolo.Requisicao
 		if err := protocolo.LerMensagem(reader, &req); err != nil {
-			// tratamento de erro omitido...
+			if !errors.Is(err, io.EOF) {
+				log.Printf("erro ao ler mensagem: %v", err)
+			}
 			return
 		}
 

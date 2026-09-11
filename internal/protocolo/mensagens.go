@@ -20,6 +20,14 @@ type LoginDados struct {
 	Senha   string `json:"senha"`
 }
 
+// LoginResposta e o Dados devolvido por um login bem-sucedido — o Role
+// deixa o cliente saber qual menu mostrar sem precisar perguntar de
+// novo a cada login.
+type LoginResposta struct {
+	Mensagem string `json:"mensagem"`
+	Role     string `json:"role"`
+}
+
 type CadastroDados struct {
 	Usuario string `json:"email"`
 	Role    string `json:"role"`
