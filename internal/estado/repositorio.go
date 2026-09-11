@@ -63,6 +63,9 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 
 	err := r.trava.ComEscrita(func() error {
 		r.proximoIDCarona++
+		// chave é a string que usamos como chave nos mapas e tambem como
+		// dominio.Trecho.IDCarona — evita converter int<->string em varios
+		// lugares do código.
 		chave := strconv.Itoa(r.proximoIDCarona)
 
 		carona = dominio.Carona{
@@ -78,8 +81,13 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 		// usada aqui pra saber QUANTOS trechos existem (len(rota)-1);
 		// os proprios Trecho retornados nao sao guardados, so recriados
 		// sob demanda em BuscarItinerarios a partir de r.caronas.
+
+		// rota de [A, B, C] tem 2 trechos: A->B e B->C
 		numTrechos := len(rota) - 1
+
+		// assentosPorTrecho[i] é o contador de assentos livres no trecho i da carona
 		assentosPorTrecho := make([]int, numTrechos)
+
 		for i := range assentosPorTrecho {
 			assentosPorTrecho[i] = capacidade
 		}
@@ -98,6 +106,11 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 // passageiros confirmaedos em cada trcho" — isso exige cruzar com
 // r.reservas filtrando pelas que referenciam cada carona. Deixei so a
 // lista de caronas por enquanto; e um bom proximo passo.
+
+// Cascata: CancelarCarona também percorre r.reservas e cancela (ou marca como inválidas) todas
+// as que referenciam essa carona, devolvendo os assentos que essas reservas ocupavam
+// em outras caronas (no caso de itinerário combinado).
+
 func (r *Repositorio) ConsultarCaronas(motorista string) ([]dominio.Carona, error) {
 	var resultado []dominio.Carona
 
@@ -113,7 +126,12 @@ func (r *Repositorio) ConsultarCaronas(motorista string) ([]dominio.Carona, erro
 	return resultado, err
 }
 
-// CancelarCarona remove uma carona e seus contadores de assento.
+// CancelarCarona remove uma carona e seus contadores de assento, e
+// cancela em cascata qualquer reserva que a referencie. Para os itens
+// dessas reservas que apontam para OUTRAS caronas (itinerario
+// combinado), o assento e devolvido antes de apagar a reserva — senao
+// ele ficaria preso para sempre, ja que a reserva inteira esta sendo
+// removida.
 func (r *Repositorio) CancelarCarona(idCarona int) error {
 	chave := strconv.Itoa(idCarona)
 
@@ -122,15 +140,69 @@ func (r *Repositorio) CancelarCarona(idCarona int) error {
 			return fmt.Errorf("carona %d nao encontrada", idCarona)
 		}
 
-		// DECISAO EM ABERTO: o que fazer com reservas JA confirmadas
-		// nesta carona? Por enquanto isto cancela a carona mesmo que ja
-		// existam reservas confirmadas nela (elas ficam "orfas" —
-		// continuam existindo em r.reservas apontando pra uma carona que
-		// nao existe mais). Documente a decisao final no relatorio.
+		for chaveReserva, reserva := range r.reservas {
+			tocaEssaCarona := false
+			for _, item := range reserva.Itens {
+				if item.CaronaID == idCarona {
+					tocaEssaCarona = true
+					continue
+				}
+				// Devolve o assento nas OUTRAS caronas do itinerario —
+				// a de idCarona nem precisa, seu contador vai ser
+				// apagado inteiro logo abaixo mesmo.
+				if contadores, ok := r.assentos[strconv.Itoa(item.CaronaID)]; ok && item.Trecho.Indice < len(contadores) {
+					contadores[item.Trecho.Indice]++
+				}
+			}
+			if tocaEssaCarona {
+				delete(r.reservas, chaveReserva)
+			}
+		}
+
 		delete(r.caronas, chave)
 		delete(r.assentos, chave)
 		return nil
 	})
+}
+
+// VerificarReserva confere se uma reserva ja confirmada ainda e valida.
+//
+// CORRECAO em relacao a primeira tentativa: o valor do contador de
+// assentos NAO importa aqui — ele pode estar em 0 sem que isso invalide
+// a SUA reserva (0 so significa que nao sobrou vaga pra MAIS ninguem,
+// nao que a sua tenha sumido). O que de fato invalida uma reserva ja
+// confirmada e a carona (ou o trecho) referenciado ter deixado de
+// existir — por isso a checagem e só sobre "ok" (a chave ainda existe
+// em r.assentos), nunca sobre o valor do contador.
+//
+// NOTA: se CancelarCarona ja cancela em cascata as reservas afetadas
+// (ver acima), na pratica esta funcao dificilmente vai encontrar uma
+// reserva "orfa" — a propria reserva ja teria sido apagada de
+// r.reservas antes. Ainda serve como checagem defensiva, mas o cascade
+// em CancelarCarona e que resolve o problema na raiz.
+func (r *Repositorio) VerificarReserva(idReserva int) (bool, error) {
+	chave := strconv.Itoa(idReserva)
+	var valida bool
+
+	err := r.trava.ComLeitura(func() error {
+		reserva, existe := r.reservas[chave]
+		if !existe {
+			return fmt.Errorf("reserva %d nao encontrada", idReserva)
+		}
+
+		valida = true
+		for _, item := range reserva.Itens {
+			contadores, ok := r.assentos[strconv.Itoa(item.CaronaID)]
+			if !ok || item.Trecho.Indice >= len(contadores) {
+				// a carona (ou o trecho) referenciado nao existe mais
+				valida = false
+				return nil
+			}
+		}
+		return nil
+	})
+
+	return valida, err
 }
 
 // BuscarItinerarios monta o grafo de trechos disponiveis a partir do
