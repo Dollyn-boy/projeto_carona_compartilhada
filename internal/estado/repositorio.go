@@ -11,6 +11,7 @@ package estado
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"time"
 	"vaijunto/internal/concorrencia"
@@ -265,7 +266,28 @@ func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]domin
 		return nil, err
 	}
 
-	return dominio.BuscarTodosItinerarios(grafo, origem, destino), nil
+	itinerarios := dominio.BuscarTodosItinerarios(grafo, origem, destino)
+
+	// Retorna itinierarios ordenados por numero de trechos (menos trechos primeiro)
+	if len(itinerarios) > 1 {
+		sort.Slice(itinerarios, func(i, j int) bool {
+			if len(itinerarios[i].Passos) == len(itinerarios[j].Passos) {
+				// Se tiverem o mesmo numero de trechos, ordena por preco total (mais barato primeiro)
+				precoTotalI := 0
+				for _, passo := range itinerarios[i].Passos {
+					precoTotalI += r.caronas[passo.IDCarona].Preco
+				}
+				precoTotalJ := 0
+				for _, passo := range itinerarios[j].Passos {
+					precoTotalJ += r.caronas[passo.IDCarona].Preco
+				}
+				return precoTotalI < precoTotalJ
+			}
+			return len(itinerarios[i].Passos) < len(itinerarios[j].Passos)
+		})
+	}
+
+	return itinerarios, nil
 }
 
 // ConfirmarReserva e o metodo mais importante do arquivo: recebe um

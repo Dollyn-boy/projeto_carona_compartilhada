@@ -1,29 +1,29 @@
 package protocolo
 
 import (
-    "bufio"
-    "encoding/json"
-    "net"
+	"bufio"
+	"encoding/json"
+	"net"
 )
 
 func EscreverMensagem(conn net.Conn, msg any) error {
-    dados, err := json.Marshal(msg)
-    if err != nil {
-        return err
-    }
+	dados, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
 
-    dados = append(dados, '\n')
+	dados = append(dados, '\n')
 
-    _, err = conn.Write(dados)
+	_, err = conn.Write(dados)
 
-    return err
+	return err
 }
 
 func LerMensagem(reader *bufio.Reader, msg any) error {
-    dados, err := reader.ReadBytes('\n')
-    if err != nil {
-        return err
-    }
+	dados, err := reader.ReadBytes('\n')
+	if err != nil {
+		return err
+	}
 
-    return json.Unmarshal(dados, msg)
+	return json.Unmarshal(dados, msg)
 }

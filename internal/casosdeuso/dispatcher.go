@@ -58,7 +58,7 @@ func Despachar(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisica
 	case "ping":
 		return tratarPing(req)
 	case "cadastro":
-		return tratarCadastro(repo, req)
+		return tratarCadastro(repo, sessao, req)
 	case "login":
 		// Passamos o ponteiro da sessão para o login poder alterá-la!
 		return tratarLogin(repo, sessao, req)
@@ -143,7 +143,7 @@ func tratarLogout(sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
 	return ok(req, "logout ok")
 }
 
-func tratarCadastro(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
+func tratarCadastro(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
 	var dados protocolo.CadastroDados
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
@@ -160,7 +160,19 @@ func tratarCadastro(repo *estado.Repositorio, req protocolo.Requisicao) protocol
 		return erro(req, err.Error()) // ex: "usuário já existe"
 	}
 
-	return ok(req, map[string]string{"mensagem": "cadastro realizado com sucesso"})
+	// CORRECAO: cadastro tambem autentica a sessao — sem isso, o cliente
+	// achava que ja podia ir direto pro menu depois do cadastro, mas a
+	// primeira operacao real caia em "acesso negado: faca login
+	// primeiro", porque so tratarLogin marcava sessao.Autenticado.
+	sessao.Autenticado = true
+	sessao.Usuario = dados.Usuario
+	sessao.Role = dados.Role
+	sessao.UltimaAtividade = time.Now()
+
+	return ok(req, protocolo.LoginResposta{
+		Mensagem: "cadastro realizado com sucesso, bem-vindo " + dados.Usuario,
+		Role:     dados.Role,
+	})
 }
 
 // ============================================================================

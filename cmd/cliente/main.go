@@ -1,11 +1,11 @@
+package main
+
 // Cliente unico do VaiJunto: pede cadastro ou login (com o papel —
 // motorista ou passageiro — escolhido no cadastro e devolvido pelo
 // login), e a partir dai mostra o menu certo. Substitui os antigos
 // cmd/cliente-motorista e cmd/cliente-passageiro, que nunca faziam
 // login de verdade e por isso ficaram incompativeis quando o servidor
 // passou a exigir autenticacao em toda operacao privada.
-
-package main
 
 import (
 	"bufio"
