@@ -114,14 +114,55 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 // as que referenciam essa carona, devolvendo os assentos que essas reservas ocupavam
 // em outras caronas (no caso de itinerário combinado).
 
-func (r *Repositorio) ConsultarCaronas(motorista string) ([]dominio.Carona, error) {
-	var resultado []dominio.Carona
+// CaronaComOcupacao carrega uma carona junto com a lista de passageiros
+// confirmados em cada trecho elementar dela — e o que permite ao
+// motorista "acompanhar os passageiros confirmados por trecho" (item 8
+// do barema).
+type CaronaComOcupacao struct {
+	Carona               dominio.Carona
+	PassageirosPorTrecho [][]string // indice = Trecho.Indice; valor = nomes dos passageiros confirmados naquele trecho
+}
+
+// ConsultarCaronas devolve as caronas de um motorista, cada uma com a
+// ocupacao (quem confirmou o que) em cada trecho — cruzando r.caronas
+// com r.reservas.
+func (r *Repositorio) ConsultarCaronas(motorista string) ([]CaronaComOcupacao, error) {
+	var resultado []CaronaComOcupacao
 
 	err := r.trava.ComLeitura(func() error {
-		for _, carona := range r.caronas {
-			if carona.Motorista == motorista {
-				resultado = append(resultado, *carona)
+		for chave, carona := range r.caronas {
+			if carona.Motorista != motorista {
+				continue
 			}
+
+			numTrechos := len(carona.Rota) - 1
+			passageirosPorTrecho := make([][]string, numTrechos)
+
+			// Percorre TODAS as reservas do sistema procurando itens que
+			// apontam para esta carona — nao ha indice reverso (carona ->
+			// reservas), entao isso e O(reservas) por carona consultada.
+			// Em escala pequena (o volume esperado do projeto) isso e
+			// perfeitamente aceitavel; se um dia virar gargalo de
+			// verdade, um indice dedicado resolveria.
+			for _, reserva := range r.reservas {
+				for _, item := range reserva.Itens {
+					if strconv.Itoa(item.CaronaID) != chave {
+						continue
+					}
+					if item.Trecho.Indice < 0 || item.Trecho.Indice >= numTrechos {
+						continue
+					}
+					passageirosPorTrecho[item.Trecho.Indice] = append(
+						passageirosPorTrecho[item.Trecho.Indice],
+						reserva.Passageiro,
+					)
+				}
+			}
+
+			resultado = append(resultado, CaronaComOcupacao{
+				Carona:               *carona,
+				PassageirosPorTrecho: passageirosPorTrecho,
+			})
 		}
 		return nil
 	})
@@ -221,29 +262,32 @@ func (r *Repositorio) VerificarReserva(idReserva int) (bool, error) {
 }
 
 // BuscarItinerarios monta o grafo de trechos disponiveis a partir do
-// estado atual e devolve TODOS os itinerarios possiveis entre origem e
-// destino — usa dominio.BuscarTodosItinerarios (DFS), nao o BFS de
-// menor numero de trechos, conforme decidido.
+// estado atual, devolve TODOS os itinerarios possiveis entre origem e
+// destino (dominio.BuscarTodosItinerarios, DFS), ignora caronas cuja
+// data ja passou, e ordena o resultado: menos trechos primeiro, e em
+// caso de empate, menor preco total primeiro.
 //
-// NOTA: ainda nao filtra por data, porque dominio.Carona nao tem esse
-// campo (ver carona.go). Quando adicionar, filtre aqui, antes de montar
-// "disponiveis".
+// IMPORTANTE: a ordenacao acontece AINDA DENTRO do mesmo ComLeitura que
+// montou o grafo. O comparador de sort.Slice consulta r.caronas de novo
+// (para somar o preco total de cada itinerario) — se isso rodasse DEPOIS
+// do ComLeitura já ter retornado (como numa primeira tentativa), essa
+// leitura ficaria desprotegida, correndo contra qualquer PublicarCarona
+// ou CancelarCarona (escrita) acontecendo ao mesmo tempo em outra
+// goroutine. go test -race pegaria isso na hora.
 func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]dominio.Itinerario, error) {
-	var grafo dominio.GrafoItinerarios
+	var itinerarios []dominio.Itinerario
 
 	err := r.trava.ComLeitura(func() error {
 		var disponiveis []dominio.ArestaDisponivel
 
 		for chave, carona := range r.caronas {
-			trechos := dominio.TrechosDaRota(chave, carona.Rota)
-			contadores := r.assentos[chave]
-
-			data_carona := carona.Data
-
-			// Ignora caronas que já passaram
-			if data_carona.Before(time.Now()) {
+			// Ignora caronas cuja data ja passou.
+			if carona.Data.Before(time.Now()) {
 				continue
 			}
+
+			trechos := dominio.TrechosDaRota(chave, carona.Rota)
+			contadores := r.assentos[chave]
 
 			for _, trecho := range trechos {
 				assentosLivres := contadores[trecho.Indice]
@@ -259,35 +303,36 @@ func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]domin
 			}
 		}
 
-		grafo = dominio.ConstruirGrafo(disponiveis)
+		grafo := dominio.ConstruirGrafo(disponiveis)
+		itinerarios = dominio.BuscarTodosItinerarios(grafo, origem, destino)
+
+		// Criterio de ordenacao: menos trechos primeiro; empatando,
+		// menor preco total primeiro. Continua dentro da trava porque
+		// precoTotalItinerario le r.caronas.
+		sort.Slice(itinerarios, func(i, j int) bool {
+			if len(itinerarios[i].Passos) != len(itinerarios[j].Passos) {
+				return len(itinerarios[i].Passos) < len(itinerarios[j].Passos)
+			}
+			return r.precoTotalItinerario(itinerarios[i]) < r.precoTotalItinerario(itinerarios[j])
+		})
+
 		return nil
 	})
-	if err != nil {
-		return nil, err
+
+	return itinerarios, err
+}
+
+// precoTotalItinerario soma o preco das caronas envolvidas num
+// itinerario. So deve ser chamada de dentro de um ComLeitura/ComEscrita
+// (le r.caronas diretamente, sem trava propria).
+func (r *Repositorio) precoTotalItinerario(it dominio.Itinerario) int {
+	total := 0
+	for _, passo := range it.Passos {
+		if carona, ok := r.caronas[passo.IDCarona]; ok {
+			total += carona.Preco
+		}
 	}
-
-	itinerarios := dominio.BuscarTodosItinerarios(grafo, origem, destino)
-
-	// Retorna itinierarios ordenados por numero de trechos (menos trechos primeiro)
-	if len(itinerarios) > 1 {
-		sort.Slice(itinerarios, func(i, j int) bool {
-			if len(itinerarios[i].Passos) == len(itinerarios[j].Passos) {
-				// Se tiverem o mesmo numero de trechos, ordena por preco total (mais barato primeiro)
-				precoTotalI := 0
-				for _, passo := range itinerarios[i].Passos {
-					precoTotalI += r.caronas[passo.IDCarona].Preco
-				}
-				precoTotalJ := 0
-				for _, passo := range itinerarios[j].Passos {
-					precoTotalJ += r.caronas[passo.IDCarona].Preco
-				}
-				return precoTotalI < precoTotalJ
-			}
-			return len(itinerarios[i].Passos) < len(itinerarios[j].Passos)
-		})
-	}
-
-	return itinerarios, nil
+	return total
 }
 
 // ConfirmarReserva e o metodo mais importante do arquivo: recebe um

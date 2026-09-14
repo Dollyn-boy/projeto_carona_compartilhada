@@ -102,7 +102,16 @@ type CaronaResposta struct {
 }
 
 type ConsultarCaronasResposta struct {
-	Caronas []CaronaResposta `json:"caronas"`
+	Caronas []CaronaComOcupacaoResposta `json:"caronas"`
+}
+
+// CaronaComOcupacaoResposta estende CaronaResposta com a ocupacao por
+// trecho — item 8 do barema ("acompanhar os passageiros confirmados por
+// trecho"). PassageirosPorTrecho[i] e a lista de nomes confirmados no
+// trecho de indice i da rota.
+type CaronaComOcupacaoResposta struct {
+	CaronaResposta
+	PassageirosPorTrecho [][]string `json:"passageiros_por_trecho"`
 }
 
 type ReservaResposta struct {

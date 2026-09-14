@@ -217,6 +217,14 @@ func consultarCaronas(conexao *clientenet.Conexao) {
 	}
 	for _, c := range resultado.Caronas {
 		fmt.Printf("  [ID %d] %v — %d assentos, R$%d, %s\n", c.ID, c.Rota, c.Capacidade, c.Preco, c.Data)
+		for i, passageiros := range c.PassageirosPorTrecho {
+			origem, destino := c.Rota[i], c.Rota[i+1]
+			if len(passageiros) == 0 {
+				fmt.Printf("      trecho %s->%s: vazio\n", origem, destino)
+				continue
+			}
+			fmt.Printf("      trecho %s->%s: %s\n", origem, destino, strings.Join(passageiros, ", "))
+		}
 	}
 }
 

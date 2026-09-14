@@ -1,16 +1,25 @@
-# TODO: Dockerfile do servidor central do VaiJunto.
+# Dockerfile do servidor central do VaiJunto.
 #
-# Sugestao de build multi-stage (binario Go e estatico, entao a imagem
-# final pode ser minima):
-#
-#   FROM golang:1.26-alpine AS build
-#   WORKDIR /app
-#   COPY . .
-#   RUN go build -o /servidor ./cmd/servidor
-#
-#   FROM alpine:latest
-#   COPY --from=build /servidor /servidor
-#   EXPOSE <porta do servidor>
-#   ENTRYPOINT ["/servidor"]
-#
-# Ajuste a porta exposta conforme a que voce definir no protocolo.
+# Build MULTI-STAGE: duas imagens em sequencia dentro do mesmo arquivo.
+# A primeira ("build") tem o compilador Go inteiro (pesada, ~300MB+),
+# mas so existe durante a compilacao. A segunda ("final") comeca do
+# zero e copia so o BINARIO ja compilado — o resultado fica pequeno
+# (dezenas de MB) porque o Go gera um executavel estatico, sem depender
+# de bibliotecas do sistema pra rodar.
+
+FROM golang:1.26-alpine AS build
+WORKDIR /app
+COPY . .
+# CGO_ENABLED=0 garante um binario 100% estatico (sem depender de
+# bibliotecas C do sistema operacional), o que permite rodar numa
+# imagem final minima como alpine.
+RUN CGO_ENABLED=0 go build -o /servidor ./cmd/servidor
+
+FROM alpine:latest
+COPY --from=build /servidor /servidor
+
+# EXPOSE e so documentacao (nao abre porta sozinho) — a publicacao de
+# fato acontece com "-p" no docker run ou "ports:" no docker-compose.
+EXPOSE 8080
+
+ENTRYPOINT ["/servidor"]

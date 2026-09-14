@@ -48,7 +48,10 @@ func tratarConsultarCaronas(repo *estado.Repositorio, usuario string, req protoc
 
 	var resposta protocolo.ConsultarCaronasResposta
 	for _, c := range caronas {
-		resposta.Caronas = append(resposta.Caronas, caronaParaResposta(c))
+		resposta.Caronas = append(resposta.Caronas, protocolo.CaronaComOcupacaoResposta{
+			CaronaResposta:       caronaParaResposta(c.Carona),
+			PassageirosPorTrecho: c.PassageirosPorTrecho,
+		})
 	}
 
 	return ok(req, resposta)

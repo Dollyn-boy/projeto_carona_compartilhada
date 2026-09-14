@@ -7,16 +7,24 @@ package rede
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"time"
 
 	"vaijunto/internal/casosdeuso"
 	"vaijunto/internal/estado"
 	"vaijunto/internal/protocolo"
 )
+
+// timeoutInatividade encerra uma conexao que fica sem mandar NENHUMA
+// mensagem por tempo demais — sem isso, um cliente que conecta e nunca
+// fala nada (por bug, ma-fe, ou queda de rede sem FIN) prenderia a
+// goroutine daquela conexao para sempre, vazando recursos aos poucos.
+const timeoutInatividade = 5 * time.Minute
 
 // Iniciar sobe o listener TCP no endereço informado (ex: ":8080") e
 // entra no loop de aceitação de conexões. Bloqueia até o listener falhar
@@ -62,11 +70,48 @@ func tratarConexao(conn net.Conn, repo *estado.Repositorio) {
 	sessao := casosdeuso.NovaSessao()
 
 	for {
+		// Renova o prazo a cada mensagem: o cliente tem ate
+		// timeoutInatividade para mandar a PROXIMA mensagem, contando a
+		// partir de agora — nao e um limite pra conexao inteira, so pra
+		// ficar em silencio.
+		conn.SetReadDeadline(time.Now().Add(timeoutInatividade))
+
 		var req protocolo.Requisicao
-		if err := protocolo.LerMensagem(reader, &req); err != nil {
-			if !errors.Is(err, io.EOF) {
-				log.Printf("erro ao ler mensagem: %v", err)
+		err := protocolo.LerMensagem(reader, &req)
+
+		if err != nil {
+			// EOF: o cliente fechou a conexao normalmente (ex: opcao
+			// "encerrar" do menu). Nao e erro, nao loga.
+			if errors.Is(err, io.EOF) {
+				return
 			}
+
+			// Timeout: o cliente ficou quieto tempo demais. Registra e
+			// encerra — a conexao provavelmente nao serve mais pra nada.
+			var erroRede net.Error
+			if errors.As(err, &erroRede) && erroRede.Timeout() {
+				log.Printf("conexao encerrada por inatividade (%s sem mensagens)", timeoutInatividade)
+				return
+			}
+
+			// Mensagem malformada (JSON invalido, campo com tipo errado):
+			// a CONEXAO continua boa — so essa linha especifica nao fez
+			// sentido. Avisa o cliente com uma resposta de erro e segue
+			// lendo a proxima mensagem, em vez de derrubar tudo.
+			var erroSintaxe *json.SyntaxError
+			var erroTipo *json.UnmarshalTypeError
+			if errors.As(err, &erroSintaxe) || errors.As(err, &erroTipo) {
+				respErro := protocolo.Resposta{Status: "erro", Motivo: "mensagem malformada: " + err.Error()}
+				if err := protocolo.EscreverMensagem(conn, respErro); err != nil {
+					log.Printf("erro ao responder mensagem malformada: %v", err)
+					return
+				}
+				continue
+			}
+
+			// Qualquer outro erro (conexao resetada, etc.) — nao da pra
+			// recuperar, encerra.
+			log.Printf("erro ao ler mensagem: %v", err)
 			return
 		}
 
