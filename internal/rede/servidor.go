@@ -1,8 +1,4 @@
-// Package rede é a camada "Rede (E/S)" do servidor: só fala TCP puro. Não
-// sabe nada sobre caronas, reservas ou tipos de operação — apenas aceita
-// conexões, lê e escreve mensagens já *formatadas* pelo pacote protocolo,
-// e repassa cada mensagem recebida para o pacote casosdeuso decidir o
-// que fazer com ela.
+// Package rede é a camada "Rede (E/S)" do servidor
 package rede
 
 import (
@@ -20,22 +16,13 @@ import (
 	"vaijunto/internal/protocolo"
 )
 
-// timeoutInatividade encerra uma conexao que fica sem mandar NENHUMA
-// mensagem por tempo demais — sem isso, um cliente que conecta e nunca
-// fala nada (por bug, ma-fe, ou queda de rede sem FIN) prenderia a
-// goroutine daquela conexao para sempre, vazando recursos aos poucos.
+
 const timeoutInatividade = 5 * time.Minute
 
 // Iniciar sobe o listener TCP no endereço informado (ex: ":8080") e
 // entra no loop de aceitação de conexões. Bloqueia até o listener falhar
 // ou ser fechado.
 //
-// CORRECAO: agora recebe *estado.Repositorio e repassa para cada
-// conexão. Antes não existia NENHUMA forma de casosdeuso.Despachar
-// chegar até o estado real — este é o parâmetro que fecha essa lacuna.
-// O mesmo ponteiro de repo é compartilhado por TODAS as conexões
-// aceitas (é o que faz uma carona publicada numa conexão aparecer pra
-// consultas feitas por outra).
 func Iniciar(endereco string, repo *estado.Repositorio) error {
 	listener, err := net.Listen("tcp", endereco)
 	if err != nil {
@@ -56,11 +43,6 @@ func Iniciar(endereco string, repo *estado.Repositorio) error {
 	}
 }
 
-// tratarConexao roda numa goroutine própria por cliente conectado — a
-// queda de um cliente nunca afeta os demais. O bufio.Reader é criado uma
-// única vez aqui e reaproveitado em todo o loop, pelo mesmo motivo
-// explicado em internal/clientenet.
-// rede/servidor.go
 
 func tratarConexao(conn net.Conn, repo *estado.Repositorio) {
 	defer conn.Close()
@@ -94,10 +76,6 @@ func tratarConexao(conn net.Conn, repo *estado.Repositorio) {
 				return
 			}
 
-			// Mensagem malformada (JSON invalido, campo com tipo errado):
-			// a CONEXAO continua boa — so essa linha especifica nao fez
-			// sentido. Avisa o cliente com uma resposta de erro e segue
-			// lendo a proxima mensagem, em vez de derrubar tudo.
 			var erroSintaxe *json.SyntaxError
 			var erroTipo *json.UnmarshalTypeError
 			if errors.As(err, &erroSintaxe) || errors.As(err, &erroTipo) {
