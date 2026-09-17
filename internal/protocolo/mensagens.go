@@ -34,11 +34,6 @@ type CadastroDados struct {
 	Senha   string `json:"senha"`
 }
 
-// ============================================================================
-// Tipos de REQUISIÇÃO (o que o cliente envia)
-// SEGURANÇA: Os campos "Motorista" e "Passageiro" foram removidos daqui.
-// A identidade agora é extraída da Sessão no pacote casosdeuso!
-// ============================================================================
 
 type PublicarCaronaDados struct {
 	Rota       []string `json:"rota"`
@@ -73,9 +68,6 @@ type CancelarReservaDados struct {
 	IDReserva int `json:"id_reserva"`
 }
 
-// ============================================================================
-// Tipos de RESPOSTA (o que o servidor devolve dentro de Resposta.Dados)
-// ============================================================================
 
 type TrechoDados struct {
 	IDCarona string `json:"id_carona"`
