@@ -133,9 +133,6 @@ func menu(conexao *clientenet.Conexao, leitor *bufio.Reader, role string) {
 	}
 }
 
-// ============================================================================
-// Menu do motorista
-// ============================================================================
 
 func menuMotorista(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	for {
@@ -244,9 +241,6 @@ func cancelarCarona(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	fmt.Println("Carona cancelada.")
 }
 
-// ============================================================================
-// Menu do passageiro
-// ============================================================================
 
 func menuPassageiro(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	for {
@@ -391,10 +385,6 @@ func cancelarReserva(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	}
 	fmt.Println("Reserva cancelada.")
 }
-
-// ============================================================================
-// Helpers de entrada/saida
-// ============================================================================
 
 func lerLinha(leitor *bufio.Reader, prompt string) string {
 	fmt.Print(prompt)
