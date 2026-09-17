@@ -15,9 +15,6 @@ import (
 // o estado (caronas, reservas) ser realmente compartilhado entre
 // clientes diferentes, e nao um por conexao.
 //
-// TODO conforme o projeto crescer:
-//   - ler porta/config de flag ou variavel de ambiente em vez do valor fixo abaixo;
-//   - tratar encerramento gracioso (sinal SIGINT/SIGTERM).
 func main() {
 	repo := estado.NovoRepositorio()
 
