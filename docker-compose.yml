@@ -1,16 +1,4 @@
-# docker-compose para testar servidor e cliente(s) em containers
-# separados na MESMA maquina, antes de ir para maquinas fisicas
-# distintas do laboratorio (que e o teste que o item 11 do barema
-# realmente cobra: "como foi resolvido o problema de conectividade
-# entre conteineres executados em MAQUINAS DISTINTAS").
-#
-# O compose cria automaticamente uma rede Docker interna e registra um
-# DNS: dentro dessa rede, o hostname "servidor" resolve para o IP do
-# container do servico "servidor" abaixo. E por isso que o cliente
-# consegue conectar em "servidor:8080" sem saber nenhum IP real — isso
-# NAO existe fora do compose. Numa maquina separada de verdade (o teste
-# final), nao ha rede Docker compartilhada nenhuma: o cliente precisa
-# do IP real da outra maquina, exposto via a porta publicada abaixo.
+
 
 services:
   servidor:
