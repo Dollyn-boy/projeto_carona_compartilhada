@@ -2,10 +2,7 @@
 // clientes (motorista e passageiro): conectar, enviar e receber
 // mensagens do protocolo. É o equivalente, do lado do cliente, ao papel
 // que internal/rede desempenha no servidor.
-//
-// Este pacote não contém nenhuma lógica de interface — só rede. A
-// interface de terminal (menus, prompts) fica em cmd/cliente-motorista
-// e cmd/cliente-passageiro, chamando este pacote.
+
 package clientenet
 
 import (
@@ -18,9 +15,6 @@ import (
 
 // Conexao empacota o socket TCP e o bufio.Reader associado a ele.
 //
-// O bufio.Reader precisa ser criado UMA VEZ por conexao e reaproveitado
-// em toda leitura subsequente — criar um novo a cada chamada descartaria
-// dados ja lidos do buffer interno (o mesmo bug do exercicio de eco).
 type Conexao struct {
 	conn   net.Conn
 	reader *bufio.Reader
