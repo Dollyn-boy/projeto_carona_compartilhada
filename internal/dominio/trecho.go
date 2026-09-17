@@ -7,12 +7,6 @@ type Cidade string
 // carona com rota [A, B, C, D], existem 3 trechos elementares: A-B
 // (Indice 0), B-C (Indice 1), C-D (Indice 2).
 //
-// IMPORTANTE: este struct so guarda a ESTRUTURA do trecho (de qual
-// carona, em qual posicao da rota, entre quais cidades) — ele NAO
-// guarda o contador de assentos disponiveis. Esse contador e dado
-// MUTAVEL, compartilhado entre goroutines, e por isso vive em
-// internal/estado, protegido por internal/concorrencia. Pense neste
-// struct como "a definicao do trecho", nao como "o estoque atual dele".
 
 type Trecho struct {
 	IDCarona string
