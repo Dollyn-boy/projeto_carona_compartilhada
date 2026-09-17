@@ -61,21 +61,6 @@ rede -> casosdeuso -> estado -> (dominio + concorrencia)
 mexe em nenhuma trava diretamente — so chama `internal/estado`, que e o
 unico pacote que combina dados com controle de concorrencia.
 
-## Status atual
-
-Implementado e testado: protocolo (envelope + framing), rede (accept
-loop, timeout de inatividade, tratamento de mensagem malformada sem
-derrubar a conexao), dominio (Carona/Trecho/Reserva/Usuario, grafo de
-busca com BFS e DFS, ordenacao por numero de trechos e depois preco),
-concorrencia (trava global RWMutex), estado (as 7 operacoes de negocio +
-cadastro/autenticacao de usuario, com ownership check em cancelamentos e
-devolucao de assento em cascata), autenticacao (sessao por conexao,
-gate central de autorizacao), e o cliente unico com os dois menus.
-
-Ainda TODO: `test/carga` (harness de carga obrigatorio), testes
-dedicados em `internal/concorrencia` e `internal/dominio` (o grafo ja
-tem cobertura em `busca_test.go`; a trava e o restante do dominio
-ainda nao).
 
 ## Build
 
@@ -109,11 +94,6 @@ em outro lugar.
 
 ### Opcao A — docker-compose (dois containers, mesma maquina)
 
-Mais simples pra testar localmente antes do laboratorio. Suba o
-servidor primeiro, confira que ele esta escutando, e so entao rode o
-cliente — assim evita a corrida de o cliente tentar conectar antes do
-servidor estar pronto:
-
 ```
 docker compose up --build -d servidor
 docker compose logs servidor          # espere aparecer "servidor escutando em :8080"
@@ -129,9 +109,6 @@ terminal — cada `run` sobe um container novo, independente.
 
 ### Opcao B — dois containers manuais, rede Docker explicita
 
-Mais proximo do que vai acontecer de verdade (maquinas fisicas
-distintas), ainda rodando na mesma maquina pra testar:
-
 ```
 docker build -f docker/Dockerfile.servidor -t vaijunto-servidor .
 docker build -f docker/Dockerfile.cliente -t vaijunto-cliente .
@@ -143,19 +120,12 @@ docker run --rm -it --network vaijunto-net vaijunto-cliente -servidor servidor:8
 
 ### Opcao C — maquinas fisicas separadas (o teste real do laboratorio)
 
-Sem rede Docker compartilhada nenhuma — so a porta exposta e o IP real
-da outra maquina. **Este e o cenario que o item 11 do barema pergunta
-diretamente** ("como foi resolvido o problema de conectividade entre
-conteineres executados em maquinas distintas") — a resposta e: nao ha
-mecanismo especial nenhum de descoberta, o cliente so precisa saber o
-IP real da maquina do servidor na rede do laboratorio, passado via
-`-servidor`, e a porta precisa estar publicada (`-p 8080:8080`) no host
-do servidor.
-
 ```
 # Maquina A (roda o servidor)
+docker build -f docker/Dockerfile.servidor -t vaijunto-servidor .
 docker run --rm -p 8080:8080 vaijunto-servidor
 
 # Maquina B (roda o cliente, apontando pro IP real da Maquina A)
+docker build -f docker/Dockerfile.cliente -t vaijunto-cliente .
 docker run --rm -it vaijunto-cliente -servidor 192.168.0.10:8080
 ```
