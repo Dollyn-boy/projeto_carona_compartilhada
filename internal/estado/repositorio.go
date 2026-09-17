@@ -3,10 +3,6 @@
 // pacote que combina os tipos de internal/dominio com as travas de
 // internal/concorrencia para expor operações seguras (já protegidas
 // contra corrida) para o pacote casosdeuso chamar.
-//
-// Nenhum outro pacote deve tocar diretamente nas estruturas de dados
-// guardadas aqui — é essa fronteira que garante que toda leitura ou
-// escrita passa pelo controle de concorrência, sem excecao.
 package estado
 
 import (
@@ -103,21 +99,7 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 	return carona, err
 }
 
-// ConsultarCaronas devolve as caronas publicadas por um motorista.
-//
-// TODO (nao implementado ainda): o comentario original pedia tambem "os
-// passageiros confirmaedos em cada trcho" — isso exige cruzar com
-// r.reservas filtrando pelas que referenciam cada carona. Deixei so a
-// lista de caronas por enquanto; e um bom proximo passo.
 
-// Cascata: CancelarCarona também percorre r.reservas e cancela (ou marca como inválidas) todas
-// as que referenciam essa carona, devolvendo os assentos que essas reservas ocupavam
-// em outras caronas (no caso de itinerário combinado).
-
-// CaronaComOcupacao carrega uma carona junto com a lista de passageiros
-// confirmados em cada trecho elementar dela — e o que permite ao
-// motorista "acompanhar os passageiros confirmados por trecho" (item 8
-// do barema).
 type CaronaComOcupacao struct {
 	Carona               dominio.Carona
 	PassageirosPorTrecho [][]string // indice = Trecho.Indice; valor = nomes dos passageiros confirmados naquele trecho
@@ -138,12 +120,6 @@ func (r *Repositorio) ConsultarCaronas(motorista string) ([]CaronaComOcupacao, e
 			numTrechos := len(carona.Rota) - 1
 			passageirosPorTrecho := make([][]string, numTrechos)
 
-			// Percorre TODAS as reservas do sistema procurando itens que
-			// apontam para esta carona — nao ha indice reverso (carona ->
-			// reservas), entao isso e O(reservas) por carona consultada.
-			// Em escala pequena (o volume esperado do projeto) isso e
-			// perfeitamente aceitavel; se um dia virar gargalo de
-			// verdade, um indice dedicado resolveria.
 			for _, reserva := range r.reservas {
 				for _, item := range reserva.Itens {
 					if strconv.Itoa(item.CaronaID) != chave {
@@ -176,11 +152,7 @@ func (r *Repositorio) ConsultarCaronas(motorista string) ([]CaronaComOcupacao, e
 // combinado), o assento e devolvido antes de apagar a reserva — senao
 // ele ficaria preso para sempre, ja que a reserva inteira esta sendo
 // removida.
-// CancelarCarona remove uma carona e seus contadores de assento, e
-// cancela em cascata qualquer reserva que a referencie.
-//
-// SEGURANÇA: Exige o ID do motorista para garantir que apenas o dono
-// da carona possa cancelá-la.
+
 func (r *Repositorio) CancelarCarona(idCarona int, motorista string) error {
 	chave := strconv.Itoa(idCarona)
 
@@ -222,20 +194,6 @@ func (r *Repositorio) CancelarCarona(idCarona int, motorista string) error {
 }
 
 // VerificarReserva confere se uma reserva ja confirmada ainda e valida.
-//
-// CORRECAO em relacao a primeira tentativa: o valor do contador de
-// assentos NAO importa aqui — ele pode estar em 0 sem que isso invalide
-// a SUA reserva (0 so significa que nao sobrou vaga pra MAIS ninguem,
-// nao que a sua tenha sumido). O que de fato invalida uma reserva ja
-// confirmada e a carona (ou o trecho) referenciado ter deixado de
-// existir — por isso a checagem e só sobre "ok" (a chave ainda existe
-// em r.assentos), nunca sobre o valor do contador.
-//
-// NOTA: se CancelarCarona ja cancela em cascata as reservas afetadas
-// (ver acima), na pratica esta funcao dificilmente vai encontrar uma
-// reserva "orfa" — a propria reserva ja teria sido apagada de
-// r.reservas antes. Ainda serve como checagem defensiva, mas o cascade
-// em CancelarCarona e que resolve o problema na raiz.
 func (r *Repositorio) VerificarReserva(idReserva int) (bool, error) {
 	chave := strconv.Itoa(idReserva)
 	var valida bool
@@ -266,14 +224,7 @@ func (r *Repositorio) VerificarReserva(idReserva int) (bool, error) {
 // destino (dominio.BuscarTodosItinerarios, DFS), ignora caronas cuja
 // data ja passou, e ordena o resultado: menos trechos primeiro, e em
 // caso de empate, menor preco total primeiro.
-//
-// IMPORTANTE: a ordenacao acontece AINDA DENTRO do mesmo ComLeitura que
-// montou o grafo. O comparador de sort.Slice consulta r.caronas de novo
-// (para somar o preco total de cada itinerario) — se isso rodasse DEPOIS
-// do ComLeitura já ter retornado (como numa primeira tentativa), essa
-// leitura ficaria desprotegida, correndo contra qualquer PublicarCarona
-// ou CancelarCarona (escrita) acontecendo ao mesmo tempo em outra
-// goroutine. go test -race pegaria isso na hora.
+
 func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]dominio.Itinerario, error) {
 	var itinerarios []dominio.Itinerario
 
@@ -339,11 +290,6 @@ func (r *Repositorio) precoTotalItinerario(it dominio.Itinerario) int {
 // itinerario JA ESCOLHIDO (um ou mais trechos, possivelmente de caronas
 // diferentes) e confirma TODOS os trechos ou NENHUM.
 //
-// A atomicidade vem de tudo isto acontecer dentro de uma UNICA chamada
-// a ComEscrita: como a trava e global, nenhuma outra ConfirmarReserva
-// (nem nenhuma leitura) roda ao mesmo tempo entre a checagem e a
-// escrita — nao ha janela pra outro passageiro "roubar" um assento
-// entre o passo 1 e o passo 2 abaixo.
 func (r *Repositorio) ConfirmarReserva(passageiro string, itinerario dominio.Itinerario) (dominio.Reserva, error) {
 	var reserva dominio.Reserva
 
@@ -419,8 +365,6 @@ func (r *Repositorio) ConsultarReservas(passageiro string) ([]dominio.Reserva, e
 // CancelarReserva remove uma reserva E devolve os assentos que ela
 // ocupava para os contadores correspondentes.
 //
-// SEGURANÇA: Exige o ID do passageiro para garantir que apenas o dono
-// da reserva possa cancelá-la.
 func (r *Repositorio) CancelarReserva(idReserva int, passageiro string) error {
 	chave := strconv.Itoa(idReserva)
 
