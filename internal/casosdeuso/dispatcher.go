@@ -15,33 +15,9 @@ import (
 // Despachar decide o que fazer com uma requisição já parseada, com base
 // em req.Tipo, e devolve a resposta correspondente.
 //
-// TODO: à medida que internal/estado for existindo de verdade, troque os
-// handlers de motorista.go e passageiro.go para chamá-lo, e registre-os
-// aqui. Quando login existir, esta função provavelmente vai precisar
-// receber também uma sessão da conexão (ver internal/rede) para saber
-// quem está autenticado.
-//
-// Por enquanto só existe "ping" — serve para validar a tubulação
-// completa (rede + protocolo + roteamento) antes de qualquer lógica de
-// negócio real.
-// Despachar decide o que fazer com uma requisição já parseada, com base
-// em req.Tipo, e devolve a resposta correspondente.
-//
-// CORRECAO: agora recebe *estado.Repositorio como parâmetro — antes não
-// havia NENHUMA forma de um handler chegar até o estado real do
-// servidor (nem internal/rede nem cmd/servidor criavam um Repositorio).
-// Esse repo é criado UMA VEZ em cmd/servidor/main.go e repassado através
-// de rede.Iniciar -> tratarConexao -> aqui, sempre o MESMO ponteiro —
-// é por isso que uma carona publicada por uma conexão aparece pra
-// consultas feitas por outra conexão.
-//
-// TODO: quando login/cadastro autenticarem de verdade, esta função
-// provavelmente vai precisar receber também uma sessão da conexão (ver
-// internal/rede) para saber quem está autenticado.
 
 func Despachar(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
 
-	// 1. CONTROLE DE EXPIRAÇÃO (Exemplo: 30 minutos inativo)
 	limiteInatividade := 30 * time.Minute
 	if sessao.Autenticado {
 		if time.Since(sessao.UltimaAtividade) > limiteInatividade {
@@ -53,7 +29,6 @@ func Despachar(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisica
 		// Atualiza o relógio a cada requisição válida
 		sessao.UltimaAtividade = time.Now()
 	}
-	// 2. ROTAS PÚBLICAS (Qualquer um pode acessar sem estar logado)
 	switch req.Tipo {
 	case "ping":
 		return tratarPing(req)
@@ -102,9 +77,6 @@ func Despachar(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisica
 	}
 }
 
-// ============================================================================
-// HANDLERS PÚBLICOS (Login, Logout, etc)
-// ============================================================================
 
 func tratarLogin(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
 	var dados protocolo.LoginDados
@@ -117,9 +89,6 @@ func tratarLogin(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisi
 		return erro(req, "usuario ou senha invalidos")
 	}
 
-	// =========================================================
-	// O SEGREDO ESTÁ AQUI: Atualizamos a sessão desta conexão TCP!
-	// =========================================================
 	sessao.Autenticado = true
 	sessao.Usuario = dados.Usuario
 	sessao.Role = role
@@ -157,13 +126,9 @@ func tratarCadastro(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requ
 	}
 
 	if err := repo.CadastrarUsuario(dados.Usuario, dados.Senha, dados.Role); err != nil {
-		return erro(req, err.Error()) // ex: "usuário já existe"
+		return erro(req, err.Error()) 
 	}
 
-	// CORRECAO: cadastro tambem autentica a sessao — sem isso, o cliente
-	// achava que ja podia ir direto pro menu depois do cadastro, mas a
-	// primeira operacao real caia em "acesso negado: faca login
-	// primeiro", porque so tratarLogin marcava sessao.Autenticado.
 	sessao.Autenticado = true
 	sessao.Usuario = dados.Usuario
 	sessao.Role = dados.Role
@@ -175,12 +140,8 @@ func tratarCadastro(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requ
 	})
 }
 
-// ============================================================================
 // Helpers compartilhados por motorista.go e passageiro.go (mesmo pacote)
-// ============================================================================
 
-// ok monta uma Resposta de sucesso, serializando "dados" (qualquer
-// struct de protocolo, ex: protocolo.CaronaResposta) para JSON.
 func ok(req protocolo.Requisicao, dados any) protocolo.Resposta {
 	bytes, err := json.Marshal(dados)
 	if err != nil {
