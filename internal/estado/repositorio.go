@@ -144,11 +144,7 @@ func (r *Repositorio) ConsultarCaronas(motorista string) ([]CaronaComOcupacao, e
 }
 
 // CancelarCarona remove uma carona e seus contadores de assento, e
-// cancela em cascata qualquer reserva que a referencie. Para os itens
-// dessas reservas que apontam para OUTRAS caronas (itinerario
-// combinado), o assento e devolvido antes de apagar a reserva — senao
-// ele ficaria preso para sempre, ja que a reserva inteira esta sendo
-// removida.
+// cancela em cascata qualquer reserva que a referencie. 
 
 func (r *Repositorio) CancelarCarona(idCarona int, motorista string) error {
 	chave := strconv.Itoa(idCarona)
@@ -160,9 +156,6 @@ func (r *Repositorio) CancelarCarona(idCarona int, motorista string) error {
 			return fmt.Errorf("carona %d nao encontrada", idCarona)
 		}
 
-		// ==========================================
-		// BARREIRA DE AUTORIZAÇÃO
-		// ==========================================
 		if carona.Motorista != motorista {
 			return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a carona %d", idCarona)
 		}
@@ -215,12 +208,6 @@ func (r *Repositorio) VerificarReserva(idReserva int) (bool, error) {
 
 	return valida, err
 }
-
-// BuscarItinerarios monta o grafo de trechos disponiveis a partir do
-// estado atual, devolve TODOS os itinerarios possiveis entre origem e
-// destino (dominio.BuscarTodosItinerarios, DFS), ignora caronas cuja
-// data ja passou, e ordena o resultado: menos trechos primeiro, e em
-// caso de empate, menor preco total primeiro.
 
 func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]dominio.Itinerario, error) {
 	var itinerarios []dominio.Itinerario
@@ -355,10 +342,7 @@ func (r *Repositorio) ConsultarReservas(passageiro string) ([]dominio.Reserva, e
 	return resultado, err
 }
 
-// CancelarReserva remove uma reserva E devolve os assentos que ela
-// ocupava para os contadores correspondentes. Esquecer de devolver o
-// assento seria um jeito facil de o servidor "vazar" capacidade real ao
-// longo de uma execucao longa.
+
 // CancelarReserva remove uma reserva E devolve os assentos que ela
 // ocupava para os contadores correspondentes.
 //
@@ -371,9 +355,6 @@ func (r *Repositorio) CancelarReserva(idReserva int, passageiro string) error {
 			return fmt.Errorf("reserva %d nao encontrada", idReserva)
 		}
 
-		// ==========================================
-		// BARREIRA DE AUTORIZAÇÃO
-		// ==========================================
 		if reserva.Passageiro != passageiro {
 			return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a reserva %d", idReserva)
 		}
