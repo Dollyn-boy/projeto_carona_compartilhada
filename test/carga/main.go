@@ -1,13 +1,4 @@
-// Harness de teste automatizado de concorrencia — item 10 do barema.
-//
-// Diferente dos testes em internal/estado (que chamam o Repositorio
-// diretamente, em processo), este harness fala com um SERVIDOR REAL
-// pela rede, usando o mesmo internal/clientenet que o cliente de
-// terminal usa. Isso exercita a pilha inteira: rede -> protocolo ->
-// casosdeuso -> estado -> concorrencia — nao so a logica de negocio
-// isolada.
-//
-// O que ele faz:
+
 //  1. Cadastra um motorista de teste e publica UMA carona com
 //     capacidade conhecida (N assentos).
 //  2. Dispara M passageiros CONCORRENTES (goroutines, cada um com sua
@@ -19,7 +10,6 @@
 //     perdido por erro de concorrencia).
 //  4. Mede o tempo de resposta (mediana e p99) sob essa disputa.
 //
-// Uso (com o servidor ja rodando em outro terminal):
 //
 //	go run ./test/carga -servidor localhost:8080 -clientes 30 -capacidade 5
 package main
