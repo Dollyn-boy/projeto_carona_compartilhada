@@ -16,10 +16,7 @@ import (
 
 // Repositorio guarda o estado real do servidor em memória. As chaves
 // dos três mapas são a mesma string: strconv.Itoa(carona.Id) (ou
-// reserva.Id). Usar essa string tambem como dominio.Trecho.IDCarona é o
-// que evita converter int<->string espalhado pelo código — a conversão
-// acontece só nas bordas deste arquivo (PublicarCarona na entrada,
-// ConfirmarReserva na saída).
+// reserva.Id). 
 type Repositorio struct {
 	trava    *concorrencia.Trava
 	caronas  map[string]*dominio.Carona  // chave: strconv.Itoa(carona.Id)
