@@ -1,22 +1,34 @@
-# TODO: docker-compose para testes locais (servidor + clientes na mesma
-# maquina) antes de mover para maquinas separadas do laboratorio, como
-# exige o enunciado.
+# docker-compose para testar servidor e cliente(s) em containers
+# separados na MESMA maquina, antes de ir para maquinas fisicas
+# distintas do laboratorio (que e o teste que o item 11 do barema
+# realmente cobra: "como foi resolvido o problema de conectividade
+# entre conteineres executados em MAQUINAS DISTINTAS").
 #
-# Exemplo de estrutura:
-#
-# services:
-#   servidor:
-#     build:
-#       context: .
-#       dockerfile: docker/Dockerfile.servidor
-#     ports:
-#       - "8080:8080"
-#
-#   cliente-motorista:
-#     build:
-#       context: .
-#       dockerfile: docker/Dockerfile.cliente-motorista
-#     depends_on:
-#       - servidor
-#     stdin_open: true
-#     tty: true
+# O compose cria automaticamente uma rede Docker interna e registra um
+# DNS: dentro dessa rede, o hostname "servidor" resolve para o IP do
+# container do servico "servidor" abaixo. E por isso que o cliente
+# consegue conectar em "servidor:8080" sem saber nenhum IP real — isso
+# NAO existe fora do compose. Numa maquina separada de verdade (o teste
+# final), nao ha rede Docker compartilhada nenhuma: o cliente precisa
+# do IP real da outra maquina, exposto via a porta publicada abaixo.
+
+services:
+  servidor:
+    build:
+      context: .                          # raiz do repo = contexto do build (o que o COPY . . do Dockerfile enxerga)
+      dockerfile: docker/Dockerfile.servidor
+    ports:
+      - "8080:8080"                       # <porta da maquina hospedeira>:<porta dentro do container>
+                                           # necessario para acessar o servidor de FORA do Docker
+                                           # (ex: outra maquina do laboratorio, ou um go run local).
+
+  cliente:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cliente
+    depends_on:
+      - servidor                          # garante que o container do servidor SOBE antes,
+                                           # mas nao garante que ja esta ESCUTANDO — ver nota no README.
+    command: ["-servidor", "servidor:8080"]  # vira argv do ENTRYPOINT do Dockerfile.cliente
+    stdin_open: true                      # necessario para o cliente ler input interativo (cadastro/login/menu)
+    tty: true
