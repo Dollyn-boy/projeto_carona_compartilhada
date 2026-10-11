@@ -23,7 +23,7 @@ func tratarPublicarCarona(repo *estado.Repositorio, usuario string, req protocol
 
 	data, err := time.Parse("2006-01-02", dados.Data)
 	if err != nil {
-		return erro(req, "data invalida (use o formato AAAA-MM-DD): "+err.Error())
+		return erro(req, "data invalida (use o formato AAAA-MM-DD)")
 	}
 
 	// SEGURANÇA: Usamos o usuario da sessão em vez de dados.Motorista!

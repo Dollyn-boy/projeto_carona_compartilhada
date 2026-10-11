@@ -9,27 +9,21 @@ type Cidade string
 //
 
 type Trecho struct {
+	Empresa  string
 	IDCarona string
-	Indice   int // posicao do trecho na rota: 0 = primeiro trecho da carona
+	Indice   int
 	Origem   Cidade
 	Destino  Cidade
 }
 
-// TrechosDaRota constroi a lista de trechos elementares a partir de uma
-// rota ordenada de cidades. Ex: TrechosDaRota("carona-1", []Cidade{"A",
-// "B", "C", "D"}) devolve os trechos A-B, B-C, C-D nessa ordem — os
-// mesmos 3 trechos do exemplo acima.
-//
-// Isso e usado tanto na hora de publicar uma carona (para saber quantos
-// contadores de assento criar em internal/estado) quanto na hora de
-// montar o grafo de busca (ver busca.go).
-func TrechosDaRota(idCarona string, rota []Cidade) []Trecho {
+func TrechosDaRota(empresa, idCarona string, rota []Cidade) []Trecho {
 	// Uma rota com N cidades tem N-1 trechos elementares. Pre-alocar a
 	// slice com essa capacidade evita realocacoes durante o append.
 	trechos := make([]Trecho, 0, len(rota)-1)
 
 	for i := 0; i < len(rota)-1; i++ {
 		trechos = append(trechos, Trecho{
+			Empresa:  empresa,
 			IDCarona: idCarona,
 			Indice:   i,
 			Origem:   rota[i],

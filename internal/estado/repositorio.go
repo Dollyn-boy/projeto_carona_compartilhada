@@ -6,6 +6,7 @@
 package estado
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -14,15 +15,38 @@ import (
 	"vaijunto/internal/dominio"
 )
 
+type EstadoTx int
+
+const (
+	TxPreparada EstadoTx = iota + 1
+	TxConfirmada
+	TxAbortada
+)
+
+type Hold struct {
+	TxID    string
+	Trechos []dominio.Trecho // todos os trechos DESTA empresa na transação
+	Estado  EstadoTx
+}
+
+var (
+	ErrIndisponivel   = errors.New("trecho indisponivel")
+	ErrTxDesconhecida = errors.New("transacao desconhecida")
+	ErrTxAbortada     = errors.New("transacao abortada")
+	ErrEstadoInvalido = errors.New("estado invalido")
+)
+
 // Repositorio guarda o estado real do servidor em memória. As chaves
 // dos três mapas são a mesma string: strconv.Itoa(carona.Id) (ou
-// reserva.Id). 
+// reserva.Id).
 type Repositorio struct {
-	trava    *concorrencia.Trava
-	caronas  map[string]*dominio.Carona  // chave: strconv.Itoa(carona.Id)
-	assentos map[string][]int            // mesma chave; indexado por Trecho.Indice
-	reservas map[string]*dominio.Reserva // chave: strconv.Itoa(reserva.Id)
-	usuarios map[string]*dominio.Usuario // chave: usuario.Usuario
+	trava      *concorrencia.Trava
+	empresa    string
+	caronas    map[string]*dominio.Carona  // chave: strconv.Itoa(carona.Id)
+	assentos   map[string][]int            // mesma chave; indexado por Trecho.Indice
+	reservas   map[string]*dominio.Reserva // chave: strconv.Itoa(reserva.Id)
+	usuarios   map[string]*dominio.Usuario // chave: usuario.Usuario
+	transacoes map[string]*Hold            // chave: TxID
 
 	// Geradores simples de ID sequencial. So sao alterados dentro de
 	// ComEscrita, entao nao precisam de sync/atomic separado.
@@ -30,14 +54,80 @@ type Repositorio struct {
 	proximoIDReserva int
 }
 
+// Preparar é o primeiro passo do protocolo de duas fases: verifica se os
+// trechos estão disponíveis e, se sim, reserva-os (diminuindo os
+// contadores de assento). Se não, grava o voto "não" (TxAbortada) e
+// devolve erro. Se sim, grava o voto "sim" (TxPreparada) e devolve nil.
+func (r *Repositorio) Preparar(txID string, ts []dominio.Trecho) error {
+	return r.trava.ComEscrita(func() error {
+		// Se a transacao ja existe, nao precisa verificar disponibilidade de novo.
+		if h, ok := r.transacoes[txID]; ok {
+			// Se a transacao ja foi abortada, devolve erro. Se ja foi preparada ou confirmada, devolve nil (idempotente).
+			if h.Estado == TxAbortada {
+				return ErrTxAbortada
+			}
+			return nil
+		}
+		// Se a transacao nao existe, verifica disponibilidade e ajusta assentos.
+		// Se falhar, grava TxAbortada e devolve erro. Se passar, grava TxPreparada e devolve nil.
+		if err := r.verificarDisponibilidade(ts); err != nil {
+			r.transacoes[txID] = &Hold{TxID: txID, Estado: TxAbortada} // grava o voto "não"
+			return err
+		}
+		r.ajustarAssentos(ts, -1)
+		r.transacoes[txID] = &Hold{TxID: txID, Trechos: ts, Estado: TxPreparada}
+		return nil
+	})
+}
+
+// Confirmar é o segundo passo do protocolo de duas fases: se a transação
+// estiver em estado TxPreparada, muda para TxConfirmada. Se já estiver
+// em TxConfirmada, devolve nil (idempotente). Se estiver em TxAbortada,
+// devolve erro.
+func (r *Repositorio) Confirmar(txID string) error {
+	return r.trava.ComEscrita(func() error {
+		h, ok := r.transacoes[txID]
+		if !ok {
+			return ErrTxDesconhecida
+		}
+		switch h.Estado {
+		case TxAbortada:
+			return ErrTxAbortada
+		case TxPreparada:
+			h.Estado = TxConfirmada
+		}
+		return nil // já confirmada: idempotente
+	})
+}
+
+func (r *Repositorio) Abortar(txID string) error {
+	return r.trava.ComEscrita(func() error {
+		h, ok := r.transacoes[txID]
+		if !ok {
+			r.transacoes[txID] = &Hold{TxID: txID, Estado: TxAbortada} // "túmulo"
+			return nil
+		}
+		switch h.Estado {
+		case TxConfirmada:
+			return ErrEstadoInvalido
+		case TxPreparada:
+			r.ajustarAssentos(h.Trechos, +1)
+			h.Estado = TxAbortada
+		}
+		return nil // já abortada: idempotente
+	})
+}
+
 // NovoRepositorio cria um Repositorio vazio, pronto para uso.
-func NovoRepositorio() *Repositorio {
+func NovoRepositorio(empresa string) *Repositorio {
 	return &Repositorio{
-		trava:    concorrencia.NovaTrava(),
-		caronas:  make(map[string]*dominio.Carona),
-		assentos: make(map[string][]int),
-		reservas: make(map[string]*dominio.Reserva),
-		usuarios: make(map[string]*dominio.Usuario),
+		trava:      concorrencia.NovaTrava(),
+		empresa:    empresa,
+		caronas:    make(map[string]*dominio.Carona),
+		assentos:   make(map[string][]int),
+		reservas:   make(map[string]*dominio.Reserva),
+		usuarios:   make(map[string]*dominio.Usuario),
+		transacoes: make(map[string]*Hold),
 	}
 }
 
@@ -96,7 +186,6 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 	return carona, err
 }
 
-
 type CaronaComOcupacao struct {
 	Carona               dominio.Carona
 	PassageirosPorTrecho [][]string // indice = Trecho.Indice; valor = nomes dos passageiros confirmados naquele trecho
@@ -144,7 +233,7 @@ func (r *Repositorio) ConsultarCaronas(motorista string) ([]CaronaComOcupacao, e
 }
 
 // CancelarCarona remove uma carona e seus contadores de assento, e
-// cancela em cascata qualquer reserva que a referencie. 
+// cancela em cascata qualquer reserva que a referencie.
 
 func (r *Repositorio) CancelarCarona(idCarona int, motorista string) error {
 	chave := strconv.Itoa(idCarona)
@@ -158,6 +247,17 @@ func (r *Repositorio) CancelarCarona(idCarona int, motorista string) error {
 
 		if carona.Motorista != motorista {
 			return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a carona %d", idCarona)
+		}
+
+		for _, h := range r.transacoes {
+			if h.Estado == TxAbortada {
+				continue
+			}
+			for _, t := range h.Trechos {
+				if t.IDCarona == chave {
+					return fmt.Errorf("carona %d tem transacoes pendentes ou confirmadas", idCarona)
+				}
+			}
 		}
 
 		for chaveReserva, reserva := range r.reservas {
@@ -221,7 +321,7 @@ func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]domin
 				continue
 			}
 
-			trechos := dominio.TrechosDaRota(chave, carona.Rota)
+			trechos := dominio.TrechosDaRota(r.empresa, chave, carona.Rota)
 			contadores := r.assentos[chave]
 
 			for _, trecho := range trechos {
@@ -270,10 +370,44 @@ func (r *Repositorio) precoTotalItinerario(it dominio.Itinerario) int {
 	return total
 }
 
+type chaveTrecho struct {
+	carona string
+	indice int
+}
+
+func (r *Repositorio) verificarDisponibilidade(it []dominio.Trecho) error {
+	precisa := map[chaveTrecho]int{}
+	for _, passo := range it {
+		if passo.Empresa != r.empresa {
+			return fmt.Errorf("trecho de carona de outra empresa: %s", passo.Empresa)
+		}
+		precisa[chaveTrecho{passo.IDCarona, passo.Indice}]++
+	}
+
+	for k, n := range precisa {
+		c, ok := r.assentos[k.carona]
+		if !ok || k.indice < 0 || k.indice >= len(c) {
+			return fmt.Errorf("trecho invalido")
+		}
+		if c[k.indice] < n {
+			return fmt.Errorf("%w: carona %s trecho %d", ErrIndisponivel, k.carona, k.indice)
+		}
+	}
+
+	return nil
+}
+
+func (r *Repositorio) ajustarAssentos(ts []dominio.Trecho, delta int) {
+	for _, t := range ts {
+		if c, ok := r.assentos[t.IDCarona]; ok && t.Indice >= 0 && t.Indice < len(c) {
+			c[t.Indice] += delta
+		}
+	}
+}
+
 // ConfirmarReserva e o metodo mais importante do arquivo: recebe um
 // itinerario JA ESCOLHIDO (um ou mais trechos, possivelmente de caronas
 // diferentes) e confirma TODOS os trechos ou NENHUM.
-//
 func (r *Repositorio) ConfirmarReserva(passageiro string, itinerario dominio.Itinerario) (dominio.Reserva, error) {
 	var reserva dominio.Reserva
 
@@ -282,43 +416,26 @@ func (r *Repositorio) ConfirmarReserva(passageiro string, itinerario dominio.Iti
 	}
 
 	err := r.trava.ComEscrita(func() error {
-		// Passo 1: confere se TODOS os trechos ainda tem assento —
-		// sem alterar nada ainda. Se qualquer um falhar, retorna erro
-		// aqui e a funcao inteira sai sem ter mudado nenhum contador.
-		for _, trecho := range itinerario.Passos {
-			contadores, existe := r.assentos[trecho.IDCarona]
-			if !existe || trecho.Indice >= len(contadores) {
-				return fmt.Errorf("trecho invalido: carona %s indice %d", trecho.IDCarona, trecho.Indice)
-			}
-			if contadores[trecho.Indice] <= 0 {
-				return fmt.Errorf("sem assento disponivel no trecho %s/%d", trecho.IDCarona, trecho.Indice)
-			}
-		}
 
-		// Passo 2: so chega aqui se TODOS os trechos passaram na
-		// checagem acima — agora decrementa todos.
-		for _, trecho := range itinerario.Passos {
-			r.assentos[trecho.IDCarona][trecho.Indice]--
+		err := r.verificarDisponibilidade(itinerario.Passos)
+		if err != nil {
+			return err
 		}
-
-		r.proximoIDReserva++
-		chave := strconv.Itoa(r.proximoIDReserva)
 
 		itens := make([]dominio.ItemReserva, len(itinerario.Passos))
 		for i, trecho := range itinerario.Passos {
-			idCaronaInt, convErr := strconv.Atoi(trecho.IDCarona)
-			if convErr != nil {
+			idCarona, err := strconv.Atoi(trecho.IDCarona)
+			if err != nil {
 				return fmt.Errorf("id de carona invalido no trecho: %q", trecho.IDCarona)
 			}
-			itens[i] = dominio.ItemReserva{CaronaID: idCaronaInt, Trecho: trecho}
+			itens[i] = dominio.ItemReserva{CaronaID: idCarona, Trecho: trecho}
 		}
+		// 2. A partir daqui nada falha: aplica.
+		r.ajustarAssentos(itinerario.Passos, -1)
 
-		reserva = dominio.Reserva{
-			Id:         r.proximoIDReserva,
-			Passageiro: passageiro,
-			Itens:      itens,
-		}
-		r.reservas[chave] = &reserva
+		r.proximoIDReserva++
+		reserva = dominio.Reserva{Id: r.proximoIDReserva, Passageiro: passageiro, Itens: itens}
+		r.reservas[strconv.Itoa(reserva.Id)] = &reserva
 
 		return nil
 	})
@@ -342,10 +459,8 @@ func (r *Repositorio) ConsultarReservas(passageiro string) ([]dominio.Reserva, e
 	return resultado, err
 }
 
-
 // CancelarReserva remove uma reserva E devolve os assentos que ela
 // ocupava para os contadores correspondentes.
-//
 func (r *Repositorio) CancelarReserva(idReserva int, passageiro string) error {
 	chave := strconv.Itoa(idReserva)
 
