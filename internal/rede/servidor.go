@@ -1,5 +1,13 @@
-// Package rede implementa o servidor TCP e distribui as requisicoes para
-// um conjunto fixo de workers.
+// Package rede implementa a parte de rede do servidor VaiJunto.
+//
+// Responsabilidades deste arquivo:
+//  1. abrir uma porta TCP para receber conexoes;
+//  2. ler as requisicoes enviadas pelos clientes;
+//  3. colocar cada requisicao em uma fila;
+//  4. deixar um conjunto fixo de workers executar as operacoes;
+//  5. enviar a resposta de volta pela mesma conexao TCP.
+//
+
 package rede
 
 import (
@@ -19,120 +27,199 @@ import (
 )
 
 const (
+	// Se o cliente ficar cinco minutos sem mandar uma mensagem, encerramos
+	// a conexao para nao manter conexoes abandonadas abertas indefinidamente.
 	timeoutInatividade = 5 * time.Minute
-	timeoutEscrita     = 30 * time.Second
-	filaPadrao         = 64
-	workersPadrao      = 8
+
+	// Prazo maximo configurado para tentar escrever uma resposta no socket.
+	timeoutEscrita = 30 * time.Second
+
+	// Quantidade maxima padrao de requisicoes esperando na fila.
+	// Isso NAO inclui as requisicoes que os workers ja estao executando.
+	filaPadrao = 64
+
+	// Quantidade padrao de requisicoes que podem ser processadas ao mesmo tempo.
+	workersPadrao = 8
 )
 
-// workerPool mantem um numero fixo de goroutines processando funcoes.
-// Uma fila limitada tambem aplica backpressure: quando enche, quem envia
-// espera ate um worker ficar livre, em vez de criar goroutines sem limite.
+// workerPool representa a fila de trabalho e os trabalhadores que a consomem.
+//
+// A fila guarda funcoes sem argumentos (func()). Cada funcao representa uma
+// requisicao que ja foi lida da rede e esta pronta para ser processada.
+// Aqui as tarefas sao funcoes anonimas que chamam casosdeuso.Despachar() e depois respondem ao cliente.
 type workerPool struct {
-	fila chan func()
-	wg   sync.WaitGroup
+	fila chan func()    // Canal compartilhado: conexoes colocam tarefas, workers retiram.
+	wg   sync.WaitGroup // Permite esperar que todos os workers terminem ao fechar o pool.
 }
 
+// novoWorkerPool cria um pool com um numero fixo de goroutines trabalhadoras.
+//
+// Exemplo: novoWorkerPool(8, 64) cria 8 workers e uma fila que comporta ate
+// 64 tarefas aguardando. Quando a fila esta cheia, quem tenta inserir tarefa
+// fica bloqueado ate algum worker retirar uma tarefa da fila.
 func novoWorkerPool(numeroWorkers, capacidadeFila int) *workerPool {
+	// Protecao para chamadas internas ou testes com valores invalidos.
+	// IniciarComWorkers valida os mesmos valores na entrada do servidor.
 	if numeroWorkers < 1 {
 		numeroWorkers = 1
 	}
 	if capacidadeFila < 1 {
 		capacidadeFila = 1
 	}
+
+	// O segundo argumento de make cria um canal com buffer.
+	// Um canal sem buffer faria o produtor esperar por um worker imediatamente.
+
 	p := &workerPool{fila: make(chan func(), capacidadeFila)}
+
 	for i := 0; i < numeroWorkers; i++ {
+		//  Para cada worker, incrementamos o contador do WaitGroup. Ele sera decrementado
+		//  quando o worker terminar (ou seja, quando a goroutine terminar).
 		p.wg.Add(1)
+
+		// Cada goroutine abaixo é um worker. Todos consomem a MESMA fila.
 		go func() {
-			defer p.wg.Done()
+			defer p.wg.Done() // Sinaliza que este worker terminou.
+
+			// range aguarda novas tarefas. Quando a fila for fechada, o worker
+			// ainda consome as tarefas que ja estavam nela e depois termina.
 			for tarefa := range p.fila {
-				tarefa()
+				tarefa() // Executa uma requisicao; depois volta a buscar outra.
 			}
 		}()
 	}
+
 	return p
 }
 
+// enfileirar adiciona uma tarefa para os workers executarem.
+//
+// Esta operacao pode bloquear: se todos os espacos da fila estiverem ocupados,
+// a goroutine que chamou enfileirar espera ate existir espaco. Esse efeito e
+// chamado backpressure; ele evita criar uma goroutine adicional por requisicao.
 func (p *workerPool) enfileirar(tarefa func()) {
+	// tarefa() e uma funcao anonima que encapsula a logica de processar uma requisicao
 	p.fila <- tarefa
 }
 
-// fechar so deve ser chamado depois que todos os produtores pararem de enviar.
+// fechar encerra a fila e espera os workers acabarem.
+//
+// Regra importante: so chame fechar depois que todos os produtores tiverem
+// parado de chamar enfileirar. Enfileirar em um canal fechado provoca panic.
 func (p *workerPool) fechar() {
 	close(p.fila)
 	p.wg.Wait()
 }
 
-// conexaoCliente centraliza escrita na conexao, evitando que respostas ou
-// mensagens de erro misturem bytes caso dois caminhos precisem escrever.
+// conexaoCliente junta o socket e um mutex para proteger as escritas.
+//
+// Mesmo que atualmente uma conexao espere cada resposta antes de ler a proxima
+// requisicao, o mutex garante que duas chamadas a responder nao misturem os
+// bytes das mensagens no mesmo socket.
 type conexaoCliente struct {
 	conn net.Conn
 	mu   sync.Mutex
 }
 
+// responder serializa a escrita de uma resposta naquela conexao.
 func (c *conexaoCliente) responder(resposta protocolo.Resposta) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer c.mu.Unlock() // Libera o mutex inclusive se a escrita retornar erro.
+
+	// Se a escrita demorar demais, o socket deixa de esperar indefinidamente.
+	// O erro ao configurar o prazo e ignorado nesta implementacao.
 	_ = c.conn.SetWriteDeadline(time.Now().Add(timeoutEscrita))
+
+	// EscreverMensagem pertence ao pacote protocolo: codifica a resposta no
+	// formato definido pelo protocolo e a transmite pela conexao.
 	return protocolo.EscreverMensagem(c.conn, resposta)
 }
 
-// Iniciar sobe o servidor usando uma quantidade fixa padrao de oito workers.
+// Iniciar usa os valores padrao: oito workers e uma fila para 64 tarefas.
+//
+// Este metodo e um atalho para nao precisar configurar os numeros em todos os
+// lugares que iniciam o servidor.
 func Iniciar(endereco string, repo *estado.Repositorio) error {
 	return IniciarComWorkers(endereco, repo, workersPadrao, filaPadrao)
 }
 
-// IniciarComWorkers e a versao configuravel, util para testes e experimentos
-// de carga. A quantidade de workers limita quantas requisicoes sao executadas
-// simultaneamente; a fila possui capacidade finita.
+// IniciarComWorkers inicia o servidor TCP com tamanho do pool configuravel.
+// Ela e util em testes para experimentar, por exemplo, 2 workers e fila de 5.
 func IniciarComWorkers(endereco string, repo *estado.Repositorio, numeroWorkers, capacidadeFila int) error {
+	// Recusa configuracoes que fariam o pool nao ter trabalhadores ou buffer.
 	if numeroWorkers < 1 {
 		return fmt.Errorf("numero de workers precisa ser maior que zero")
 	}
 	if capacidadeFila < 1 {
 		return fmt.Errorf("capacidade da fila precisa ser maior que zero")
 	}
+
+	// net.Listen abre a porta TCP e espera conexoes de clientes nela.
 	listener, err := net.Listen("tcp", endereco)
 	if err != nil {
 		return fmt.Errorf("falha ao escutar em %s: %w", endereco, err)
 	}
-	defer listener.Close()
+	defer listener.Close() // Fecha a porta quando esta funcao retornar.
 
+	// Cria um unico pool compartilhado por todas as conexoes aceitas.
 	pool := novoWorkerPool(numeroWorkers, capacidadeFila)
-	defer pool.fechar()
+	defer pool.fechar() // So e seguro se a funcao retornar sem produtores ativos.
 
 	log.Printf("servidor escutando em %s (workers=%d, fila=%d)", endereco, numeroWorkers, capacidadeFila)
+
 	for {
+		// Accept bloqueia ate um cliente estabelecer uma conexao TCP.
 		conn, err := listener.Accept()
 		if err != nil {
+			// A implementacao registra o erro e tenta aceitar outra conexao.
+			// Como o loop e infinito, ainda nao ha um mecanismo de encerramento
+			// gracioso do servidor nesta versao.
 			log.Printf("falha ao aceitar conexao: %v", err)
 			continue
 		}
-		// Uma goroutine por conexao fica responsavel apenas por ler mensagens
-		// e entrega-las a fila. A execucao das operacoes ocorre nos workers.
+
+		// Uma goroutine por conexao continua existindo. Ela e responsavel por
+		// ler mensagens daquele cliente e enfileira-las, nao por executar as
+		// regras de negocio diretamente. O trabalho fica a cargo dos workers.
 		go tratarConexao(conn, repo, pool)
 	}
 }
 
+// tratarConexao administra uma conexao TCP durante o tempo em que estiver aberta.
+// Cada conexao tem seu leitor e sua sessao de autenticacao.
+// Isso cria uma goroutine responsável pela conexão daquele cliente.
+// Observe que ela recebe o mesmo pool que será utilizado pelas outras conexões.
 func tratarConexao(conn net.Conn, repo *estado.Repositorio, pool *workerPool) {
-	defer conn.Close()
+	defer conn.Close() // Ao sair deste metodo, encerra o socket do cliente.
+
 	cliente := &conexaoCliente{conn: conn}
-	reader := bufio.NewReader(conn)
-	sessao := casosdeuso.NovaSessao()
+	reader := bufio.NewReader(conn)   // Reutiliza o buffer para ler mensagens completas.
+	sessao := casosdeuso.NovaSessao() // Login e dados de sessao pertencem a esta conexao.
 
 	for {
+		// Limita quanto tempo esperamos pela proxima mensagem do cliente.
 		_ = conn.SetReadDeadline(time.Now().Add(timeoutInatividade))
+
 		var req protocolo.Requisicao
+		// LerMensagem interpreta uma mensagem do protocolo (JSON delimitado
+		// pelo framing usado pelo pacote protocolo).
 		err := protocolo.LerMensagem(reader, &req)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				// EOF normalmente significa que o cliente fechou a conexao.
 				return
 			}
+
 			var erroRede net.Error
 			if errors.As(err, &erroRede) && erroRede.Timeout() {
 				log.Printf("conexao encerrada por inatividade (%s sem mensagens)", timeoutInatividade)
 				return
 			}
+
+			// Se o JSON estiver sintaticamente incorreto ou tiver um tipo de
+			// campo incompatível, tentamos informar o cliente sem derrubar a
+			// conexao imediatamente. Como a mensagem pode nao ter sido lida por
+			// completo como uma requisicao valida, esta resposta nao inclui ID.
 			var erroSintaxe *json.SyntaxError
 			var erroTipo *json.UnmarshalTypeError
 			if errors.As(err, &erroSintaxe) || errors.As(err, &erroTipo) {
@@ -141,24 +228,50 @@ func tratarConexao(conn net.Conn, repo *estado.Repositorio, pool *workerPool) {
 					log.Printf("erro ao responder mensagem malformada: %v", err)
 					return
 				}
-				continue
+				continue // Tenta ler outra mensagem nesta conexao.
 			}
+
+			// Erros de leitura que nao foram reconhecidos acima encerram a conexao.
 			log.Printf("erro ao ler mensagem: %v", err)
 			return
 		}
 
-		// Cada conexao envia uma requisicao por vez: espera a resposta antes
-		// de ler a proxima. Isso preserva a ordem das respostas e evita que a
-		// sessao de login seja acessada simultaneamente por dois workers.
+		// Aqui a mensagem foi lida e convertida para protocolo.Requisicao.
+		// Ainda nao estamos executando a regra de negocio: primeiro criamos
+		// uma tarefa para o worker pool.
 		concluida := make(chan struct{})
+
+		// Encaminhanmento da requisicao para o pool de workers. A tarefa e uma funcao anonima
+		// que chama casosdeuso.Despachar() e depois responde ao cliente.
 		pool.enfileirar(func() {
+			// Implementação da tarefa anonima que o worker vai executar. Ela tem acesso a req, sessao, repo e cliente.
+
+			// A tarefa fecha este canal ao terminar. Isso avisa a goroutine da
+			// conexao que ela pode ler a proxima requisicao.
 			defer close(concluida)
+
+			// O despachante escolhe o caso de uso a partir de req.Tipo. Ele pode
+			// chamar o repositorio para consultar ou modificar os dados.
 			resposta := casosdeuso.Despachar(repo, sessao, req)
+
+			// Depois de processar, o worker envia a resposta pela mesma conexao.
 			if err := cliente.responder(resposta); err != nil {
 				log.Printf("erro ao enviar resposta: %v", err)
-				_ = conn.Close()
+				_ = conn.Close() // Se nao conseguimos responder, encerramos o socket.
 			}
 		})
+
+		// Ponto importante: esta goroutine espera a tarefa terminar antes de
+		// voltar ao inicio do loop e ler outra mensagem.
+		//
+		// Assim, uma conexao tem no maximo uma requisicao em processamento por
+		// vez. Isso preserva a ordem das respostas e evita que dois workers
+		// alterem simultaneamente a mesma sessao (por exemplo, login/logout).
+		// Conexoes diferentes, por outro lado, podem usar workers diferentes.
 		<-concluida
 	}
 }
+
+// A diferença essencial: sem o worker pool, seria comum criar uma goroutine para processar cada requisição.
+// Com o pool, as requisições são encaminhadas para uma quantidade fixa de workers.
+// Uma goroutine por conexão continua existindo; o que fica limitado é o número de requisições em processamento simultâneo.

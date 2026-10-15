@@ -6,6 +6,7 @@ import (
 	"net"
 )
 
+// EscreverMensagem serializa a mensagem msg em JSON e a envia pelo socket TCP conn, seguida de um caractere de nova linha.
 func EscreverMensagem(conn net.Conn, msg any) error {
 	dados, err := json.Marshal(msg)
 	if err != nil {
@@ -14,6 +15,7 @@ func EscreverMensagem(conn net.Conn, msg any) error {
 
 	dados = append(dados, '\n')
 
+	// Escreve os bytes da mensagem JSON no socket TCP, seguido de um caractere de nova linha.
 	_, err = conn.Write(dados)
 
 	return err

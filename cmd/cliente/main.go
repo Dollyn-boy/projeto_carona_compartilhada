@@ -2,7 +2,7 @@ package main
 
 // Cliente unico do VaiJunto: pede cadastro ou login (com o papel —
 // motorista ou passageiro — escolhido no cadastro e devolvido pelo
-// login), e a partir dai mostra o menu certo. 
+// login), e a partir dai mostra o menu certo.
 
 import (
 	"bufio"
@@ -26,9 +26,12 @@ var proximoID = 0
 var ultimaBusca []protocolo.ItinerarioDados
 
 func main() {
+	// O cliente vai se conectar a um servidor, cujo endereco (host:porta) pode ser passado como argumento de linha de comando. Se nao for, usamos
+	// localhost:8080.
 	endereco := flag.String("servidor", "localhost:8080", "endereco do servidor (host:porta)")
 	flag.Parse()
 
+	// Conecta ao servidor
 	conexao, err := clientenet.Conectar(*endereco)
 	if err != nil {
 		log.Fatal(err)
@@ -37,7 +40,11 @@ func main() {
 
 	fmt.Printf("Conectado ao servidor: %s\n", *endereco)
 
-	leitor := bufio.NewReader(os.Stdin)
+	// Testa a comunicação antes de iniciar o cadastro ou login.
+	pingCliente(conexao)
+
+	// Pede ao usuario se quer se cadastrar ou autenticar, e chama a funcao certa.
+	leitor := bufio.NewReader(os.Stdin) // para ler do terminal
 
 	for {
 		opcao := lerLinha(leitor, "Você deseja se cadastrar ou autenticar? (c/a): ")
@@ -52,6 +59,21 @@ func main() {
 	}
 }
 
+func pingCliente(conexao *clientenet.Conexao) {
+	resp, err := conexao.Enviar(protocolo.Requisicao{Tipo: "ping", IDRequisicao: novoIDRequisicao()})
+	if err != nil {
+		log.Fatal("erro de rede ao enviar ping: ", err)
+	}
+
+	if resp.Status != "ok" {
+		log.Fatal("ping falhou: ", resp.Motivo)
+	}
+
+	fmt.Printf("PING: OK \n Dados: %s\n", resp.Dados)
+
+}
+
+// cadastrarCliente pede ao usuario o papel (motorista ou passageiro), nome de usuario e senha, envia para o servidor e trata a resposta.
 func cadastrarCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	for {
 		role := lerLinha(leitor, "Você é motorista ou passageiro? (m/p): ")
@@ -65,6 +87,7 @@ func cadastrarCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 
 		dados, _ := json.Marshal(protocolo.CadastroDados{Usuario: usuario, Role: role, Senha: senha})
 
+		// Envia a requisicao de cadastro para o servidor e trata a resposta.
 		resp, err := conexao.Enviar(protocolo.Requisicao{
 			Tipo:         "cadastro",
 			IDRequisicao: novoIDRequisicao(),
@@ -74,6 +97,7 @@ func cadastrarCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 			log.Fatal("erro de rede ao cadastrar: ", err)
 		}
 
+		// O servidor devolve "ok" se o cadastro foi bem sucedido, ou "erro" com um motivo caso contrario.
 		if resp.Status == "ok" {
 			fmt.Println("\nCadastro realizado com sucesso!")
 			// Cadastrar nao loga automaticamente (o servidor so cria o
@@ -86,6 +110,7 @@ func cadastrarCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	}
 }
 
+// loginCliente pede ao usuario nome de usuario e senha, envia para o servidor e trata a resposta.
 func loginCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	for {
 		usuario := lerLinha(leitor, "Nome de usuário: ")
@@ -93,6 +118,7 @@ func loginCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 
 		dados, _ := json.Marshal(protocolo.LoginDados{Usuario: usuario, Senha: senha})
 
+		// Envia a requisicao de login para o servidor e trata a resposta.
 		resp, err := conexao.Enviar(protocolo.Requisicao{
 			Tipo:         "login",
 			IDRequisicao: novoIDRequisicao(),
@@ -102,6 +128,7 @@ func loginCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 			log.Fatal("erro de rede ao logar: ", err)
 		}
 
+		// O servidor devolve "ok" se o login foi bem sucedido, ou "erro" com um motivo caso contrario.
 		if resp.Status != "ok" {
 			fmt.Printf("\nFalha no login: %s\nTente novamente.\n\n", resp.Motivo)
 			continue
@@ -129,7 +156,6 @@ func menu(conexao *clientenet.Conexao, leitor *bufio.Reader, role string) {
 		fmt.Println("Role desconhecido:", role)
 	}
 }
-
 
 func menuMotorista(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	for {
@@ -237,7 +263,6 @@ func cancelarCarona(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	}
 	fmt.Println("Carona cancelada.")
 }
-
 
 func menuPassageiro(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	for {
@@ -400,6 +425,7 @@ func lerInt(leitor *bufio.Reader, prompt string) int {
 	}
 }
 
+// novoIDRequisicao gera um ID unico para cada requisicao enviada ao servidor, para que possamos correlacionar respostas com requisicoes.
 func novoIDRequisicao() string {
 	proximoID++
 	return strconv.Itoa(proximoID)

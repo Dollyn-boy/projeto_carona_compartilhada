@@ -14,7 +14,6 @@ import (
 )
 
 // Conexao empacota o socket TCP e o bufio.Reader associado a ele.
-//
 type Conexao struct {
 	conn   net.Conn
 	reader *bufio.Reader
@@ -47,10 +46,12 @@ func (c *Conexao) Fechar() error {
 func (c *Conexao) Enviar(req protocolo.Requisicao) (protocolo.Resposta, error) {
 	var resp protocolo.Resposta
 
+	// Envia a requisicao para o servidor.
 	if err := protocolo.EscreverMensagem(c.conn, req); err != nil {
 		return resp, fmt.Errorf("falha ao enviar requisicao: %w", err)
 	}
 
+	// Aguarda a resposta do servidor.
 	if err := protocolo.LerMensagem(c.reader, &resp); err != nil {
 		return resp, fmt.Errorf("falha ao ler resposta: %w", err)
 	}
