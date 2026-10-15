@@ -2,21 +2,27 @@ package main
 
 import (
 	"log"
+	"os"
+	"path/filepath"
 
 	"vaijunto/internal/estado"
 	"vaijunto/internal/rede"
 )
 
-// Ponto de entrada do servidor central do VaiJunto.
-//
-// O Repositorio e criado UMA UNICA VEZ aqui, no processo do servidor, e
-// e o mesmo ponteiro compartilhado por todas as conexoes aceitas (via
-// rede.Iniciar -> tratarConexao -> casosdeuso.Despachar). E isso que faz
-// o estado (caronas, reservas) ser realmente compartilhado entre
-// clientes diferentes, e nao um por conexao.
-//
 func main() {
-	repo := estado.NovoRepositorio()
+	// Por padrao, o servidor grava os dados em ./dados/dados.json.
+	// Docker Compose configura um volume persistente e substitui esse caminho
+	// pela variavel VAIJUNTO_ARQUIVO_DADOS.
+	arquivo := os.Getenv("VAIJUNTO_ARQUIVO_DADOS")
+	if arquivo == "" {
+		arquivo = filepath.Join("dados", "dados.json")
+	}
+
+	repo, err := estado.NovoRepositorioComArquivo(arquivo)
+	if err != nil {
+		log.Fatalf("nao foi possivel abrir os dados: %v", err)
+	}
+	log.Printf("dados carregados de %s", arquivo)
 
 	if err := rede.Iniciar(":8080", repo); err != nil {
 		log.Fatal(err)

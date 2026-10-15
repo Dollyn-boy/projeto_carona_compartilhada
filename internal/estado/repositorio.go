@@ -1,48 +1,128 @@
-// Package estado é a camada "Estado em memória" da arquitetura: guarda
-// de fato os dados do servidor (caronas, trechos, reservas) e é o único
-// pacote que combina os tipos de internal/dominio com as travas de
-// internal/concorrencia para expor operações seguras (já protegidas
-// contra corrida) para o pacote casosdeuso chamar.
+// Package estado guarda os dados do VaiJunto e coordena as operacoes
+// que os leem ou modificam. As regras de negocio ficam aqui proximas dos
+// dados, para que seja facil acompanhar o que acontece com cada reserva.
 package estado
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
+
 	"vaijunto/internal/concorrencia"
 	"vaijunto/internal/dominio"
 )
 
-// Repositorio guarda o estado real do servidor em memória. As chaves
-// dos três mapas são a mesma string: strconv.Itoa(carona.Id) (ou
-// reserva.Id). 
+// Repositorio contem o estado em memoria. mu protege os mapas e os IDs;
+// trava impede que duas reservas disputem o mesmo trecho ao mesmo tempo.
+// caminhoJSON vazio significa que o repositorio e apenas em memoria (util
+// nos testes que nao precisam persistir dados).
 type Repositorio struct {
-	trava    *concorrencia.Trava
-	caronas  map[string]*dominio.Carona  // chave: strconv.Itoa(carona.Id)
-	assentos map[string][]int            // mesma chave; indexado por Trecho.Indice
-	reservas map[string]*dominio.Reserva // chave: strconv.Itoa(reserva.Id)
-	usuarios map[string]*dominio.Usuario // chave: usuario.Usuario
+	mu          sync.RWMutex
+	trava       *concorrencia.Trava
+	caminhoJSON string
 
-	// Geradores simples de ID sequencial. So sao alterados dentro de
-	// ComEscrita, entao nao precisam de sync/atomic separado.
+	caronas  map[string]*dominio.Carona
+	assentos map[string][]int // assentos livres por trecho elementar da carona
+	reservas map[string]*dominio.Reserva
+	usuarios map[string]*dominio.Usuario
+
 	proximoIDCarona  int
 	proximoIDReserva int
 }
 
-// NovoRepositorio cria um Repositorio vazio, pronto para uso.
+// NovoRepositorio cria um repositorio em memoria, sem arquivo persistente.
+// Use NovoRepositorioComArquivo no servidor para manter os dados entre reinicios.
 func NovoRepositorio() *Repositorio {
+	return novoRepositorio("")
+}
+
+// NovoRepositorioComArquivo carrega os dados do caminho informado. Se o
+// arquivo ainda nao existir, inicia um repositorio vazio e o cria na primeira
+// alteracao bem-sucedida.
+func NovoRepositorioComArquivo(caminho string) (*Repositorio, error) {
+	if strings.TrimSpace(caminho) == "" {
+		return nil, fmt.Errorf("caminho do arquivo JSON nao pode ser vazio")
+	}
+
+	r := novoRepositorio(caminho)
+	conteudo, err := os.ReadFile(caminho)
+	if errors.Is(err, os.ErrNotExist) {
+		return r, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ler arquivo de dados %q: %w", caminho, err)
+	}
+	if err := r.aplicarJSON(conteudo); err != nil {
+		return nil, fmt.Errorf("carregar arquivo de dados %q: %w", caminho, err)
+	}
+	return r, nil
+}
+
+func novoRepositorio(caminho string) *Repositorio {
 	return &Repositorio{
-		trava:    concorrencia.NovaTrava(),
-		caronas:  make(map[string]*dominio.Carona),
-		assentos: make(map[string][]int),
-		reservas: make(map[string]*dominio.Reserva),
-		usuarios: make(map[string]*dominio.Usuario),
+		trava:       concorrencia.NovaTrava(),
+		caminhoJSON: caminho,
+		caronas:     make(map[string]*dominio.Carona),
+		assentos:    make(map[string][]int),
+		reservas:    make(map[string]*dominio.Reserva),
+		usuarios:    make(map[string]*dominio.Usuario),
 	}
 }
 
-// PublicarCarona cria uma nova carona e os contadores de assento (um
-// por trecho elementar da rota, todos comecando em "capacidade").
+// estadoPersistido e o formato completo do arquivo JSON. Guardar um snapshot
+// inteiro torna a persistencia facil de entender: cada salvamento descreve
+// todo o estado atual, em vez de manter uma sequencia de eventos para repetir.
+type estadoPersistido struct {
+	Versao           int               `json:"versao"`
+	ProximoIDCarona  int               `json:"proximo_id_carona"`
+	ProximoIDReserva int               `json:"proximo_id_reserva"`
+	Caronas          []dominio.Carona  `json:"caronas"`
+	Assentos         map[string][]int  `json:"assentos_livres_por_trecho"`
+	Reservas         []dominio.Reserva `json:"reservas"`
+	Usuarios         []dominio.Usuario `json:"usuarios"`
+}
+
+// alterar executa uma modificacao protegida pelo mutex do repositorio.
+// Quando ha arquivo configurado, cria uma copia do estado anterior. Se o
+// salvamento falhar, restaura essa copia para memoria e disco nao divergirem.
+func (r *Repositorio) alterar(fn func() error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var backup []byte
+	if r.caminhoJSON != "" {
+		var err error
+		backup, err = r.serializarLocked()
+		if err != nil {
+			return fmt.Errorf("preparar estado anterior: %w", err)
+		}
+	}
+
+	if err := fn(); err != nil {
+		return err
+	}
+
+	if r.caminhoJSON == "" {
+		return nil
+	}
+	if err := r.salvarLocked(); err != nil {
+		if erroRestaurar := r.aplicarJSONLocked(backup); erroRestaurar != nil {
+			return fmt.Errorf("erro ao salvar (%v) e erro ao restaurar estado anterior: %w", err, erroRestaurar)
+		}
+		return fmt.Errorf("nao foi possivel persistir a alteracao: %w", err)
+	}
+	return nil
+}
+
+// PublicarCarona cria uma carona e inicializa um contador de assentos para
+// cada trecho adjacente da rota. Ex.: A-B-C cria dois contadores.
 func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, capacidade int, preco int, data time.Time) (dominio.Carona, error) {
 	if len(rota) < 2 {
 		return dominio.Carona{}, fmt.Errorf("rota precisa de pelo menos 2 cidades, veio %d", len(rota))
@@ -50,217 +130,168 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 	if capacidade <= 0 {
 		return dominio.Carona{}, fmt.Errorf("capacidade precisa ser maior que zero")
 	}
-
 	if data.Before(time.Now()) {
-		return dominio.Carona{}, fmt.Errorf("data da carona não pode estar no passado")
+		return dominio.Carona{}, fmt.Errorf("data da carona nao pode estar no passado")
 	}
 
-	var carona dominio.Carona
-
-	err := r.trava.ComEscrita(func() error {
-		r.proximoIDCarona++
-		// chave é a string que usamos como chave nos mapas e tambem como
-		// dominio.Trecho.IDCarona — evita converter int<->string em varios
-		// lugares do código.
-		chave := strconv.Itoa(r.proximoIDCarona)
-
-		carona = dominio.Carona{
-			Id:         r.proximoIDCarona,
+	var criada dominio.Carona
+	err := r.alterar(func() error {
+		id := r.proximoIDCarona + 1
+		criada = dominio.Carona{
+			Id:         id,
 			Motorista:  motorista,
-			Rota:       rota,
+			Rota:       append([]dominio.Cidade(nil), rota...),
 			Preco:      preco,
 			Capacidade: capacidade,
 			Data:       data,
 		}
-
-		// Um contador por trecho elementar — dominio.TrechosDaRota so e
-		// usada aqui pra saber QUANTOS trechos existem (len(rota)-1);
-		// os proprios Trecho retornados nao sao guardados, so recriados
-		// sob demanda em BuscarItinerarios a partir de r.caronas.
-
-		// rota de [A, B, C] tem 2 trechos: A->B e B->C
-		numTrechos := len(rota) - 1
-
-		// assentosPorTrecho[i] é o contador de assentos livres no trecho i da carona
-		assentosPorTrecho := make([]int, numTrechos)
-
-		for i := range assentosPorTrecho {
-			assentosPorTrecho[i] = capacidade
+		chave := strconv.Itoa(id)
+		livres := make([]int, len(rota)-1)
+		for i := range livres {
+			livres[i] = capacidade
 		}
 
-		r.caronas[chave] = &carona
-		r.assentos[chave] = assentosPorTrecho
+		r.proximoIDCarona = id
+		copiaCarona := clonarCarona(criada)
+		r.caronas[chave] = &copiaCarona
+		r.assentos[chave] = livres
 		return nil
 	})
-
-	return carona, err
+	return clonarCarona(criada), err
 }
-
 
 type CaronaComOcupacao struct {
 	Carona               dominio.Carona
-	PassageirosPorTrecho [][]string // indice = Trecho.Indice; valor = nomes dos passageiros confirmados naquele trecho
+	PassageirosPorTrecho [][]string
 }
 
-// ConsultarCaronas devolve as caronas de um motorista, cada uma com a
-// ocupacao (quem confirmou o que) em cada trecho — cruzando r.caronas
-// com r.reservas.
+// ConsultarCaronas lista as caronas de um motorista e os passageiros
+// confirmados em cada trecho elementar.
 func (r *Repositorio) ConsultarCaronas(motorista string) ([]CaronaComOcupacao, error) {
-	var resultado []CaronaComOcupacao
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-	err := r.trava.ComLeitura(func() error {
-		for chave, carona := range r.caronas {
-			if carona.Motorista != motorista {
-				continue
-			}
-
-			numTrechos := len(carona.Rota) - 1
-			passageirosPorTrecho := make([][]string, numTrechos)
-
-			for _, reserva := range r.reservas {
-				for _, item := range reserva.Itens {
-					if strconv.Itoa(item.CaronaID) != chave {
-						continue
-					}
-					if item.Trecho.Indice < 0 || item.Trecho.Indice >= numTrechos {
-						continue
-					}
-					passageirosPorTrecho[item.Trecho.Indice] = append(
-						passageirosPorTrecho[item.Trecho.Indice],
-						reserva.Passageiro,
-					)
+	resultado := make([]CaronaComOcupacao, 0)
+	for chave, carona := range r.caronas {
+		if carona.Motorista != motorista {
+			continue
+		}
+		porTrecho := make([][]string, len(carona.Rota)-1)
+		for _, reserva := range r.reservas {
+			for _, item := range reserva.Itens {
+				if strconv.Itoa(item.CaronaID) == chave && item.Trecho.Indice >= 0 && item.Trecho.Indice < len(porTrecho) {
+					porTrecho[item.Trecho.Indice] = append(porTrecho[item.Trecho.Indice], reserva.Passageiro)
 				}
 			}
-
-			resultado = append(resultado, CaronaComOcupacao{
-				Carona:               *carona,
-				PassageirosPorTrecho: passageirosPorTrecho,
-			})
 		}
-		return nil
-	})
-
-	return resultado, err
+		for i := range porTrecho {
+			sort.Strings(porTrecho[i])
+		}
+		resultado = append(resultado, CaronaComOcupacao{Carona: clonarCarona(*carona), PassageirosPorTrecho: porTrecho})
+	}
+	sort.Slice(resultado, func(i, j int) bool { return resultado[i].Carona.Id < resultado[j].Carona.Id })
+	return resultado, nil
 }
 
-// CancelarCarona remove uma carona e seus contadores de assento, e
-// cancela em cascata qualquer reserva que a referencie. 
-
+// CancelarCarona cancela a carona e remove as reservas que a utilizavam.
+// Se uma reserva tambem ocupava trechos de outras caronas, esses assentos
+// sao devolvidos. Cancelamento de carona e raro, por isso adquire as travas
+// dos trechos existentes antes de atualizar os dados relacionados.
 func (r *Repositorio) CancelarCarona(idCarona int, motorista string) error {
 	chave := strconv.Itoa(idCarona)
+	chaves := r.chavesTodosTrechos()
+	return r.trava.ComTrechos(chaves, func() error {
+		return r.alterar(func() error {
+			carona, existe := r.caronas[chave]
+			if !existe {
+				return fmt.Errorf("carona %d nao encontrada", idCarona)
+			}
+			if carona.Motorista != motorista {
+				return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a carona %d", idCarona)
+			}
 
-	return r.trava.ComEscrita(func() error {
-		// Agora precisamos pegar o ponteiro da carona para checar quem é o dono
-		carona, existe := r.caronas[chave]
-		if !existe {
-			return fmt.Errorf("carona %d nao encontrada", idCarona)
-		}
-
-		if carona.Motorista != motorista {
-			return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a carona %d", idCarona)
-		}
-
-		for chaveReserva, reserva := range r.reservas {
-			tocaEssaCarona := false
-			for _, item := range reserva.Itens {
-				if item.CaronaID == idCarona {
-					tocaEssaCarona = true
+			for chaveReserva, reserva := range r.reservas {
+				usaCarona := false
+				for _, item := range reserva.Itens {
+					if item.CaronaID == idCarona {
+						usaCarona = true
+						break
+					}
+				}
+				if !usaCarona {
 					continue
 				}
-				// Devolve o assento nas OUTRAS caronas do itinerario
-				if contadores, ok := r.assentos[strconv.Itoa(item.CaronaID)]; ok && item.Trecho.Indice < len(contadores) {
-					contadores[item.Trecho.Indice]++
+
+				for _, item := range reserva.Itens {
+					if item.CaronaID == idCarona {
+						continue // os contadores desta carona serao removidos abaixo
+					}
+					chaveOutra := strconv.Itoa(item.CaronaID)
+					if livres, ok := r.assentos[chaveOutra]; ok && item.Trecho.Indice >= 0 && item.Trecho.Indice < len(livres) {
+						livres[item.Trecho.Indice]++
+					}
 				}
-			}
-			if tocaEssaCarona {
 				delete(r.reservas, chaveReserva)
 			}
-		}
 
-		delete(r.caronas, chave)
-		delete(r.assentos, chave)
-		return nil
+			delete(r.caronas, chave)
+			delete(r.assentos, chave)
+			return nil
+		})
 	})
 }
 
-// VerificarReserva confere se uma reserva ja confirmada ainda e valida.
+// VerificarReserva verifica se todos os trechos de uma reserva ainda existem.
 func (r *Repositorio) VerificarReserva(idReserva int) (bool, error) {
-	chave := strconv.Itoa(idReserva)
-	var valida bool
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-	err := r.trava.ComLeitura(func() error {
-		reserva, existe := r.reservas[chave]
-		if !existe {
-			return fmt.Errorf("reserva %d nao encontrada", idReserva)
+	reserva, existe := r.reservas[strconv.Itoa(idReserva)]
+	if !existe {
+		return false, fmt.Errorf("reserva %d nao encontrada", idReserva)
+	}
+	for _, item := range reserva.Itens {
+		livres, ok := r.assentos[strconv.Itoa(item.CaronaID)]
+		if !ok || item.Trecho.Indice < 0 || item.Trecho.Indice >= len(livres) {
+			return false, nil
 		}
-
-		valida = true
-		for _, item := range reserva.Itens {
-			contadores, ok := r.assentos[strconv.Itoa(item.CaronaID)]
-			if !ok || item.Trecho.Indice >= len(contadores) {
-				// a carona (ou o trecho) referenciado nao existe mais
-				valida = false
-				return nil
-			}
-		}
-		return nil
-	})
-
-	return valida, err
+	}
+	return true, nil
 }
 
+// BuscarItinerarios monta um grafo apenas com os trechos que ainda possuem
+// assento. O mutex de leitura protege o snapshot enquanto a busca e ordenacao
+// acontecem; a busca em si nao modifica o estado.
 func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]dominio.Itinerario, error) {
-	var itinerarios []dominio.Itinerario
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-	err := r.trava.ComLeitura(func() error {
-		var disponiveis []dominio.ArestaDisponivel
-
-		for chave, carona := range r.caronas {
-			// Ignora caronas cuja data ja passou.
-			if carona.Data.Before(time.Now()) {
-				continue
-			}
-
-			trechos := dominio.TrechosDaRota(chave, carona.Rota)
-			contadores := r.assentos[chave]
-
-			for _, trecho := range trechos {
-				assentosLivres := contadores[trecho.Indice]
-				if assentosLivres <= 0 {
-					continue // sem assento neste trecho — nao entra no grafo de busca
-				}
-
+	disponiveis := make([]dominio.ArestaDisponivel, 0)
+	for chave, carona := range r.caronas {
+		if carona.Data.Before(time.Now()) {
+			continue
+		}
+		for _, trecho := range dominio.TrechosDaRota(chave, carona.Rota) {
+			livres := r.assentos[chave][trecho.Indice]
+			if livres > 0 {
 				disponiveis = append(disponiveis, dominio.ArestaDisponivel{
-					Trecho:              trecho,
-					AssentosDisponiveis: assentosLivres,
-					Preco:               float64(carona.Preco),
+					Trecho: trecho, AssentosDisponiveis: livres, Preco: float64(carona.Preco),
 				})
 			}
 		}
+	}
 
-		grafo := dominio.ConstruirGrafo(disponiveis)
-		itinerarios = dominio.BuscarTodosItinerarios(grafo, origem, destino)
-
-		// Criterio de ordenacao: menos trechos primeiro; empatando,
-		// menor preco total primeiro. Continua dentro da trava porque
-		// precoTotalItinerario le r.caronas.
-		sort.Slice(itinerarios, func(i, j int) bool {
-			if len(itinerarios[i].Passos) != len(itinerarios[j].Passos) {
-				return len(itinerarios[i].Passos) < len(itinerarios[j].Passos)
-			}
-			return r.precoTotalItinerario(itinerarios[i]) < r.precoTotalItinerario(itinerarios[j])
-		})
-
-		return nil
+	itinerarios := dominio.BuscarTodosItinerarios(dominio.ConstruirGrafo(disponiveis), origem, destino)
+	sort.Slice(itinerarios, func(i, j int) bool {
+		if len(itinerarios[i].Passos) != len(itinerarios[j].Passos) {
+			return len(itinerarios[i].Passos) < len(itinerarios[j].Passos)
+		}
+		return r.precoTotalItinerarioLocked(itinerarios[i]) < r.precoTotalItinerarioLocked(itinerarios[j])
 	})
-
-	return itinerarios, err
+	return itinerarios, nil
 }
 
-// precoTotalItinerario soma o preco das caronas envolvidas num
-// itinerario. So deve ser chamada de dentro de um ComLeitura/ComEscrita
-// (le r.caronas diretamente, sem trava propria).
-func (r *Repositorio) precoTotalItinerario(it dominio.Itinerario) int {
+func (r *Repositorio) precoTotalItinerarioLocked(it dominio.Itinerario) int {
 	total := 0
 	for _, passo := range it.Passos {
 		if carona, ok := r.caronas[passo.IDCarona]; ok {
@@ -270,145 +301,331 @@ func (r *Repositorio) precoTotalItinerario(it dominio.Itinerario) int {
 	return total
 }
 
-// ConfirmarReserva e o metodo mais importante do arquivo: recebe um
-// itinerario JA ESCOLHIDO (um ou mais trechos, possivelmente de caronas
-// diferentes) e confirma TODOS os trechos ou NENHUM.
-//
+// ConfirmarReserva reserva todos os trechos do itinerario ou nenhum deles.
+// Primeiro adquire travas por trecho em ordem fixa; depois valida toda a rota
+// e aplica a mudanca como uma unica operacao do repositorio.
 func (r *Repositorio) ConfirmarReserva(passageiro string, itinerario dominio.Itinerario) (dominio.Reserva, error) {
-	var reserva dominio.Reserva
-
+	var criada dominio.Reserva
 	if len(itinerario.Passos) == 0 {
-		return reserva, fmt.Errorf("itinerario vazio")
+		return criada, fmt.Errorf("itinerario vazio")
+	}
+	passos := append([]dominio.Trecho(nil), itinerario.Passos...)
+	chaves := make([]string, len(passos))
+	idsCarona := make([]int, len(passos))
+	vistos := make(map[string]bool)
+	for i, trecho := range passos {
+		if trecho.Indice < 0 {
+			return criada, fmt.Errorf("indice de trecho invalido: %d", trecho.Indice)
+		}
+		id, err := strconv.Atoi(trecho.IDCarona)
+		if err != nil || id <= 0 {
+			return criada, fmt.Errorf("id de carona invalido no trecho: %q", trecho.IDCarona)
+		}
+		idsCarona[i] = id
+		chaves[i] = concorrencia.ChaveTrecho(trecho.IDCarona, trecho.Indice)
+		if vistos[chaves[i]] {
+			return criada, fmt.Errorf("itinerario contem o mesmo trecho mais de uma vez")
+		}
+		vistos[chaves[i]] = true
 	}
 
-	err := r.trava.ComEscrita(func() error {
-		// Passo 1: confere se TODOS os trechos ainda tem assento —
-		// sem alterar nada ainda. Se qualquer um falhar, retorna erro
-		// aqui e a funcao inteira sai sem ter mudado nenhum contador.
-		for _, trecho := range itinerario.Passos {
-			contadores, existe := r.assentos[trecho.IDCarona]
-			if !existe || trecho.Indice >= len(contadores) {
-				return fmt.Errorf("trecho invalido: carona %s indice %d", trecho.IDCarona, trecho.Indice)
+	err := r.trava.ComTrechos(chaves, func() error {
+		return r.alterar(func() error {
+			// Validacao completa antes de alterar qualquer contador.
+			for _, trecho := range passos {
+				chave := trecho.IDCarona
+				if _, existe := r.caronas[chave]; !existe {
+					return fmt.Errorf("carona %s nao encontrada", chave)
+				}
+				livres, existe := r.assentos[chave]
+				if !existe || trecho.Indice >= len(livres) {
+					return fmt.Errorf("trecho invalido: carona %s indice %d", chave, trecho.Indice)
+				}
+				if livres[trecho.Indice] <= 0 {
+					return fmt.Errorf("sem assento disponivel no trecho %s/%d", chave, trecho.Indice)
+				}
 			}
-			if contadores[trecho.Indice] <= 0 {
-				return fmt.Errorf("sem assento disponivel no trecho %s/%d", trecho.IDCarona, trecho.Indice)
+
+			itens := make([]dominio.ItemReserva, len(passos))
+			for i, trecho := range passos {
+				itens[i] = dominio.ItemReserva{CaronaID: idsCarona[i], Trecho: trecho}
 			}
-		}
+			id := r.proximoIDReserva + 1
+			criada = dominio.Reserva{Id: id, Passageiro: passageiro, Itens: itens}
 
-		// Passo 2: so chega aqui se TODOS os trechos passaram na
-		// checagem acima — agora decrementa todos.
-		for _, trecho := range itinerario.Passos {
-			r.assentos[trecho.IDCarona][trecho.Indice]--
-		}
-
-		r.proximoIDReserva++
-		chave := strconv.Itoa(r.proximoIDReserva)
-
-		itens := make([]dominio.ItemReserva, len(itinerario.Passos))
-		for i, trecho := range itinerario.Passos {
-			idCaronaInt, convErr := strconv.Atoi(trecho.IDCarona)
-			if convErr != nil {
-				return fmt.Errorf("id de carona invalido no trecho: %q", trecho.IDCarona)
+			for _, trecho := range passos {
+				r.assentos[trecho.IDCarona][trecho.Indice]--
 			}
-			itens[i] = dominio.ItemReserva{CaronaID: idCaronaInt, Trecho: trecho}
-		}
-
-		reserva = dominio.Reserva{
-			Id:         r.proximoIDReserva,
-			Passageiro: passageiro,
-			Itens:      itens,
-		}
-		r.reservas[chave] = &reserva
-
-		return nil
+			r.proximoIDReserva = id
+			copiaReserva := clonarReserva(criada)
+			r.reservas[strconv.Itoa(id)] = &copiaReserva
+			return nil
+		})
 	})
-
-	return reserva, err
+	return clonarReserva(criada), err
 }
 
-// ConsultarReservas devolve as reservas de um passageiro.
+// ConsultarReservas devolve as reservas ativas de um passageiro.
 func (r *Repositorio) ConsultarReservas(passageiro string) ([]dominio.Reserva, error) {
-	var resultado []dominio.Reserva
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-	err := r.trava.ComLeitura(func() error {
-		for _, reserva := range r.reservas {
-			if reserva.Passageiro == passageiro {
-				resultado = append(resultado, *reserva)
-			}
+	resultado := make([]dominio.Reserva, 0)
+	for _, reserva := range r.reservas {
+		if reserva.Passageiro == passageiro {
+			resultado = append(resultado, clonarReserva(*reserva))
 		}
-		return nil
-	})
-
-	return resultado, err
+	}
+	sort.Slice(resultado, func(i, j int) bool { return resultado[i].Id < resultado[j].Id })
+	return resultado, nil
 }
 
-
-// CancelarReserva remove uma reserva E devolve os assentos que ela
-// ocupava para os contadores correspondentes.
-//
+// CancelarReserva remove a reserva e devolve os assentos de seus trechos.
 func (r *Repositorio) CancelarReserva(idReserva int, passageiro string) error {
-	chave := strconv.Itoa(idReserva)
+	chaveReserva := strconv.Itoa(idReserva)
 
-	return r.trava.ComEscrita(func() error {
-		reserva, existe := r.reservas[chave]
-		if !existe {
-			return fmt.Errorf("reserva %d nao encontrada", idReserva)
-		}
+	// Descobre os trechos sem manter o mutex geral enquanto espera pelas travas.
+	r.mu.RLock()
+	reservaInicial, existe := r.reservas[chaveReserva]
+	if !existe {
+		r.mu.RUnlock()
+		return fmt.Errorf("reserva %d nao encontrada", idReserva)
+	}
+	if reservaInicial.Passageiro != passageiro {
+		r.mu.RUnlock()
+		return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a reserva %d", idReserva)
+	}
+	itens := append([]dominio.ItemReserva(nil), reservaInicial.Itens...)
+	r.mu.RUnlock()
 
-		if reserva.Passageiro != passageiro {
-			return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a reserva %d", idReserva)
-		}
-
-		for _, item := range reserva.Itens {
-			trecho := item.Trecho
-			if contadores, ok := r.assentos[trecho.IDCarona]; ok && trecho.Indice < len(contadores) {
-				contadores[trecho.Indice]++
+	chaves := make([]string, len(itens))
+	for i, item := range itens {
+		chaves[i] = concorrencia.ChaveTrecho(strconv.Itoa(item.CaronaID), item.Trecho.Indice)
+	}
+	return r.trava.ComTrechos(chaves, func() error {
+		return r.alterar(func() error {
+			reserva, existe := r.reservas[chaveReserva]
+			if !existe {
+				return fmt.Errorf("reserva %d nao encontrada", idReserva)
 			}
-		}
-
-		delete(r.reservas, chave)
-		return nil
+			if reserva.Passageiro != passageiro {
+				return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a reserva %d", idReserva)
+			}
+			for _, item := range reserva.Itens {
+				chave := strconv.Itoa(item.CaronaID)
+				if livres, ok := r.assentos[chave]; ok && item.Trecho.Indice >= 0 && item.Trecho.Indice < len(livres) {
+					livres[item.Trecho.Indice]++
+				}
+			}
+			delete(r.reservas, chaveReserva)
+			return nil
+		})
 	})
 }
 
+// CadastrarUsuario persiste somente o hash da senha, nunca a senha original.
 func (r *Repositorio) CadastrarUsuario(usuario string, senha string, role string) error {
-	return r.trava.ComEscrita(func() error {
+	return r.alterar(func() error {
 		if _, existe := r.usuarios[usuario]; existe {
 			return fmt.Errorf("usuario %s ja cadastrado", usuario)
 		}
-
 		r.usuarios[usuario] = &dominio.Usuario{Usuario: usuario, SenhaHash: dominio.HashSenha(senha), Role: role}
 		return nil
 	})
 }
 
-// AutenticarUsuario confere usuario/senha e devolve o Role cadastrado
-// (motorista ou passageiro) para quem chamou poder decidir que menu
-// mostrar, sem precisar perguntar de novo a cada login.
+// AutenticarUsuario verifica a senha e devolve o papel do usuario.
 func (r *Repositorio) AutenticarUsuario(usuario string, senha string) (bool, string, error) {
-	autenticado := false
-	var role string
-	err := r.trava.ComLeitura(func() error {
-		usuarioObj, existe := r.usuarios[usuario]
-		if !existe {
-			return fmt.Errorf("usuario %s nao encontrado", usuario)
-		}
-		if usuarioObj.SenhaHash != dominio.HashSenha(senha) {
-			return fmt.Errorf("senha incorreta para o usuario %s", usuario)
-		}
-		autenticado = true
-		role = usuarioObj.Role
-		return nil
-	})
-	return autenticado, role, err
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	usuarioObj, existe := r.usuarios[usuario]
+	if !existe {
+		return false, "", fmt.Errorf("usuario %s nao encontrado", usuario)
+	}
+	if usuarioObj.SenhaHash != dominio.HashSenha(senha) {
+		return false, "", fmt.Errorf("senha incorreta para o usuario %s", usuario)
+	}
+	return true, usuarioObj.Role, nil
 }
 
-// VerificarUsuario mantido por compatibilidade com quem so precisa do
-// booleano — mas prefira AutenticarUsuario se voce tambem precisa do Role.
+// VerificarUsuario e mantido para chamadas que so precisam do booleano.
 func (r *Repositorio) VerificarUsuario(usuario string, senha string) bool {
 	autenticado, _, err := r.AutenticarUsuario(usuario, senha)
-	if err != nil {
-		return false
+	return err == nil && autenticado
+}
+
+func (r *Repositorio) chavesTodosTrechos() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	chaves := make([]string, 0)
+	for id, carona := range r.caronas {
+		for indice := 0; indice < len(carona.Rota)-1; indice++ {
+			chaves = append(chaves, concorrencia.ChaveTrecho(id, indice))
+		}
 	}
-	return autenticado
+	return chaves
+}
+
+func clonarCarona(c dominio.Carona) dominio.Carona {
+	c.Rota = append([]dominio.Cidade(nil), c.Rota...)
+	return c
+}
+
+func clonarReserva(r dominio.Reserva) dominio.Reserva {
+	r.Itens = append([]dominio.ItemReserva(nil), r.Itens...)
+	return r
+}
+
+func (r *Repositorio) estadoLocked() estadoPersistido {
+	e := estadoPersistido{
+		Versao: 1, ProximoIDCarona: r.proximoIDCarona, ProximoIDReserva: r.proximoIDReserva,
+		Assentos: make(map[string][]int, len(r.assentos)),
+		Caronas:  make([]dominio.Carona, 0, len(r.caronas)),
+		Reservas: make([]dominio.Reserva, 0, len(r.reservas)),
+		Usuarios: make([]dominio.Usuario, 0, len(r.usuarios)),
+	}
+	for chave, carona := range r.caronas {
+		e.Caronas = append(e.Caronas, clonarCarona(*carona))
+		if livres, ok := r.assentos[chave]; ok {
+			e.Assentos[chave] = append([]int(nil), livres...)
+		}
+	}
+	for _, reserva := range r.reservas {
+		e.Reservas = append(e.Reservas, clonarReserva(*reserva))
+	}
+	for _, usuario := range r.usuarios {
+		e.Usuarios = append(e.Usuarios, *usuario)
+	}
+	sort.Slice(e.Caronas, func(i, j int) bool { return e.Caronas[i].Id < e.Caronas[j].Id })
+	sort.Slice(e.Reservas, func(i, j int) bool { return e.Reservas[i].Id < e.Reservas[j].Id })
+	sort.Slice(e.Usuarios, func(i, j int) bool { return e.Usuarios[i].Usuario < e.Usuarios[j].Usuario })
+	return e
+}
+
+func (r *Repositorio) serializarLocked() ([]byte, error) {
+	return json.MarshalIndent(r.estadoLocked(), "", "  ")
+}
+
+func (r *Repositorio) salvarLocked() error {
+	conteudo, err := r.serializarLocked()
+	if err != nil {
+		return err
+	}
+	diretorio := filepath.Dir(r.caminhoJSON)
+	if err := os.MkdirAll(diretorio, 0755); err != nil {
+		return err
+	}
+	arquivoTemp, err := os.CreateTemp(diretorio, ".dados-*.tmp")
+	if err != nil {
+		return err
+	}
+	nomeTemp := arquivoTemp.Name()
+	defer os.Remove(nomeTemp)
+
+	if _, err := arquivoTemp.Write(conteudo); err != nil {
+		_ = arquivoTemp.Close()
+		return err
+	}
+	if err := arquivoTemp.Sync(); err != nil {
+		_ = arquivoTemp.Close()
+		return err
+	}
+	if err := arquivoTemp.Close(); err != nil {
+		return err
+	}
+	// O arquivo temporario fica no mesmo diretorio, entao a troca evita
+	// deixar um JSON parcialmente escrito caso o processo seja interrompido.
+	if err := os.Rename(nomeTemp, r.caminhoJSON); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *Repositorio) aplicarJSON(conteudo []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.aplicarJSONLocked(conteudo)
+}
+
+func (r *Repositorio) aplicarJSONLocked(conteudo []byte) error {
+	var e estadoPersistido
+	if err := json.Unmarshal(conteudo, &e); err != nil {
+		return err
+	}
+	if e.Versao != 1 {
+		return fmt.Errorf("versao do arquivo JSON nao suportada: %d", e.Versao)
+	}
+
+	caronas := make(map[string]*dominio.Carona, len(e.Caronas))
+	for _, carona := range e.Caronas {
+		chave := strconv.Itoa(carona.Id)
+		if carona.Id <= 0 || len(carona.Rota) < 2 {
+			return fmt.Errorf("carona invalida no arquivo: id %d", carona.Id)
+		}
+		if _, repetida := caronas[chave]; repetida {
+			return fmt.Errorf("id de carona duplicado no arquivo: %d", carona.Id)
+		}
+		copia := clonarCarona(carona)
+		caronas[chave] = &copia
+	}
+	assentos := make(map[string][]int, len(e.Assentos))
+	for chave, livres := range e.Assentos {
+		if _, existe := caronas[chave]; !existe {
+			return fmt.Errorf("contadores apontam para carona inexistente: %s", chave)
+		}
+		if len(livres) != len(caronas[chave].Rota)-1 {
+			return fmt.Errorf("quantidade de contadores invalida para carona %s", chave)
+		}
+		assentos[chave] = append([]int(nil), livres...)
+	}
+	for chave := range caronas {
+		if _, existe := assentos[chave]; !existe {
+			return fmt.Errorf("faltam contadores para carona %s", chave)
+		}
+	}
+
+	reservas := make(map[string]*dominio.Reserva, len(e.Reservas))
+	for _, reserva := range e.Reservas {
+		chave := strconv.Itoa(reserva.Id)
+		if reserva.Id <= 0 {
+			return fmt.Errorf("id de reserva invalido: %d", reserva.Id)
+		}
+		if _, repetida := reservas[chave]; repetida {
+			return fmt.Errorf("id de reserva duplicado no arquivo: %d", reserva.Id)
+		}
+		copia := clonarReserva(reserva)
+		reservas[chave] = &copia
+	}
+	usuarios := make(map[string]*dominio.Usuario, len(e.Usuarios))
+	for _, usuario := range e.Usuarios {
+		if usuario.Usuario == "" {
+			return fmt.Errorf("usuario vazio no arquivo")
+		}
+		if _, repetido := usuarios[usuario.Usuario]; repetido {
+			return fmt.Errorf("usuario duplicado no arquivo: %s", usuario.Usuario)
+		}
+		copia := usuario
+		usuarios[usuario.Usuario] = &copia
+	}
+
+	r.caronas = caronas
+	r.assentos = assentos
+	r.reservas = reservas
+	r.usuarios = usuarios
+	r.proximoIDCarona = e.ProximoIDCarona
+	r.proximoIDReserva = e.ProximoIDReserva
+	// Tolera um contador antigo menor que os IDs encontrados, evitando
+	// reutilizar identificadores caso o arquivo tenha sido editado manualmente.
+	for _, carona := range e.Caronas {
+		if carona.Id > r.proximoIDCarona {
+			r.proximoIDCarona = carona.Id
+		}
+	}
+	for _, reserva := range e.Reservas {
+		if reserva.Id > r.proximoIDReserva {
+			r.proximoIDReserva = reserva.Id
+		}
+	}
+	return nil
 }

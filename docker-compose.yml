@@ -6,9 +6,11 @@ services:
       context: .                          # raiz do repo = contexto do build (o que o COPY . . do Dockerfile enxerga)
       dockerfile: docker/Dockerfile.servidor
     ports:
-      - "8080:8080"                       # <porta da maquina hospedeira>:<porta dentro do container>
-                                           # necessario para acessar o servidor de FORA do Docker
-                                           # (ex: outra maquina do laboratorio, ou um go run local).
+      - "8080:8080"
+    environment:
+      VAIJUNTO_ARQUIVO_DADOS: /dados/dados.json
+    volumes:
+      - vaijunto-dados:/dados
 
   cliente:
     build:
@@ -20,3 +22,6 @@ services:
     command: ["-servidor", "servidor:8080"]  # vira argv do ENTRYPOINT do Dockerfile.cliente
     stdin_open: true                      # necessario para o cliente ler input interativo (cadastro/login/menu)
     tty: true
+
+volumes:
+  vaijunto-dados:

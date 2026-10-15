@@ -5,14 +5,15 @@ import (
 	"fmt"
 )
 
+// Usuario guarda o hash da senha, e nao a senha original.
 type Usuario struct {
-	Usuario   string
-	SenhaHash string
-	Role      string
+	Usuario   string `json:"usuario"`
+	SenhaHash string `json:"senha_hash"`
+	Role      string `json:"role"`
 }
 
 func HashSenha(senha string) string {
-	// Implementação de hash de senha (exemplo simples, não seguro para produção)
-	// Em um cenário real, você deve usar uma biblioteca de hashing segura, como bcrypt.
+	// Hash simples para este prototipo didatico. Sistemas reais devem usar
+	// um algoritmo proprio para senhas, como Argon2id ou bcrypt.
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(senha)))
 }

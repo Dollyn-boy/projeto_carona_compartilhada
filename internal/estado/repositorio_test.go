@@ -1,36 +1,22 @@
 package estado
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"vaijunto/internal/dominio"
 )
 
-// TODO — testes de integracao desta camada (dominio + concorrencia ja
-// combinados através do Repositorio):
-//   - publicar carona e confirmar reservas concorrentes disputando os
-//     mesmos trechos (varias goroutines chamando ConfirmarReserva ao
-//     mesmo tempo);
-//   - validar que a soma de assentos confirmados nunca excede a
-//     capacidade e que nenhuma reserva fica parcial;
-//   - rodar sempre com: go test -race ./internal/estado/...
-//
-// Isso complementa (nao substitui) os testes mais focados de
-// internal/dominio e internal/concorrencia — aqui voce testa as tres
-// camadas trabalhando juntas.
 func TestPublicarCarona(t *testing.T) {
 	repo := NovoRepositorio()
 	rota := []dominio.Cidade{"A", "B", "C"}
-	data := time.Date(
-		2026,           // ano
-		time.September, // mês
-		15,             // dia
-		14,             // hora
-		30,             // minuto
-		0,              // segundo
-		0,              // nanossegundo
-		time.Local,     // localização
-	)
+	data := dataFutura()
 
 	carona, err := repo.PublicarCarona("motorista1", rota, 3, 10, data)
 
@@ -62,16 +48,7 @@ func TestPublicarCarona(t *testing.T) {
 func TestBuscarItinerarios(t *testing.T) {
 	r := NovoRepositorio()
 
-	data := time.Date(
-		2026,
-		time.September,
-		15,
-		14,
-		30,
-		0,
-		0,
-		time.Local,
-	)
+	data := dataFutura()
 
 	if _, err := r.PublicarCarona(
 		"Joao",
@@ -102,7 +79,6 @@ func TestBuscarItinerarios(t *testing.T) {
 	itinerarios, err := r.BuscarItinerarios(
 		"Feira de Santana",
 		"Salvador",
-		// data,  // se você também alterou BuscarItinerarios para receber data
 	)
 
 	if err != nil {
@@ -121,5 +97,145 @@ func TestBuscarItinerarios(t *testing.T) {
 			"esperava 2 passos, recebeu %d",
 			len(itinerarios[0].Passos),
 		)
+	}
+}
+
+// dataFutura evita que o teste comece a falhar quando o calendario avanca.
+func dataFutura() time.Time {
+	return time.Now().Add(48 * time.Hour)
+}
+
+func TestReservaConcorrenteNaoVendeDuasVezes(t *testing.T) {
+	repo := NovoRepositorio()
+	carona, err := repo.PublicarCarona("motorista", []dominio.Cidade{"A", "B"}, 1, 10, dataFutura())
+	if err != nil {
+		t.Fatal(err)
+	}
+	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("1", carona.Rota)}
+
+	const passageiros = 20
+	var sucessos atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < passageiros; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := repo.ConfirmarReserva("passageiro-"+strconv.Itoa(i), itinerario); err == nil {
+				sucessos.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if obtido := sucessos.Load(); obtido != 1 {
+		t.Fatalf("esperava exatamente uma reserva confirmada, obtive %d", obtido)
+	}
+	totalReservas := 0
+	for i := 0; i < passageiros; i++ {
+		reservas, err := repo.ConsultarReservas("passageiro-" + strconv.Itoa(i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		totalReservas += len(reservas)
+	}
+	if totalReservas != 1 {
+		t.Fatalf("esperava uma unica reserva no repositorio, encontrei %d", totalReservas)
+	}
+}
+
+func TestReservaDeItinerarioEAtomica(t *testing.T) {
+	repo := NovoRepositorio()
+	carona, err := repo.PublicarCarona("motorista", []dominio.Cidade{"A", "B", "C"}, 1, 10, dataFutura())
+	if err != nil {
+		t.Fatal(err)
+	}
+	trechos := dominio.TrechosDaRota("1", carona.Rota)
+	if _, err := repo.ConfirmarReserva("primeiro", dominio.Itinerario{Passos: []dominio.Trecho{trechos[0]}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A-B ja esta cheio; a tentativa A-B-C deve falhar sem ocupar B-C.
+	if _, err := repo.ConfirmarReserva("segundo", dominio.Itinerario{Passos: trechos}); err == nil {
+		t.Fatal("a reserva deveria falhar porque A-B nao tem assento")
+	}
+	caminhoBC, err := repo.BuscarItinerarios("B", "C")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(caminhoBC) != 1 || len(caminhoBC[0].Passos) != 1 {
+		t.Fatalf("a falha parcial ocupou indevidamente o trecho B-C: %+v", caminhoBC)
+	}
+}
+
+func TestRepositorioPersisteERecarregaJSON(t *testing.T) {
+	caminho := filepath.Join(t.TempDir(), "dados.json")
+	repo, err := NovoRepositorioComArquivo(caminho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CadastrarUsuario("ana", "senha-de-teste", "p"); err != nil {
+		t.Fatal(err)
+	}
+	carona, err := repo.PublicarCarona("motorista", []dominio.Cidade{"A", "B", "C"}, 1, 20, dataFutura())
+	if err != nil {
+		t.Fatal(err)
+	}
+	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("1", carona.Rota)}
+	if _, err := repo.ConfirmarReserva("ana", itinerario); err != nil {
+		t.Fatal(err)
+	}
+
+	conteudo, err := os.ReadFile(caminho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jsonValido map[string]any
+	if err := json.Unmarshal(conteudo, &jsonValido); err != nil {
+		t.Fatalf("o arquivo persistido nao e JSON valido: %v", err)
+	}
+	if strings.Contains(string(conteudo), "senha-de-teste") {
+		t.Fatal("o arquivo nao deve guardar senha em texto puro")
+	}
+
+	reaberto, err := NovoRepositorioComArquivo(caminho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, role, err := reaberto.AutenticarUsuario("ana", "senha-de-teste")
+	if err != nil || !ok || role != "p" {
+		t.Fatalf("usuario nao foi restaurado corretamente: ok=%v role=%q err=%v", ok, role, err)
+	}
+	reservas, err := reaberto.ConsultarReservas("ana")
+	if err != nil || len(reservas) != 1 {
+		t.Fatalf("reserva nao foi restaurada: reservas=%v err=%v", reservas, err)
+	}
+	if _, err := reaberto.ConfirmarReserva("outra-pessoa", itinerario); err == nil {
+		t.Fatal("a disponibilidade deveria continuar ocupada depois do reinicio")
+	}
+	if err := reaberto.CancelarReserva(reservas[0].Id, "ana"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reaberto.ConfirmarReserva("outra-pessoa", itinerario); err != nil {
+		t.Fatalf("cancelamento nao foi persistido corretamente: %v", err)
+	}
+}
+
+func TestFalhaAoSalvarDesfazAlteracaoEmMemoria(t *testing.T) {
+	caminho := filepath.Join(t.TempDir(), "dados.json")
+	if err := os.Mkdir(caminho, 0755); err != nil {
+		t.Fatal(err)
+	}
+	repo := NovoRepositorio()
+	// Um diretorio no lugar do arquivo faz a troca atomica falhar de forma controlada.
+	repo.caminhoJSON = caminho
+	if _, err := repo.PublicarCarona("motorista", []dominio.Cidade{"A", "B"}, 1, 10, dataFutura()); err == nil {
+		t.Fatal("a publicacao deveria retornar erro se o snapshot nao puder ser gravado")
+	}
+	caronas, err := repo.ConsultarCaronas("motorista")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(caronas) != 0 {
+		t.Fatalf("o estado em memoria nao foi revertido apos falha de persistencia: %+v", caronas)
 	}
 }

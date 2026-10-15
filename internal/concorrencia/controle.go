@@ -1,37 +1,88 @@
-
+// Package concorrencia fornece travas por recurso (neste projeto, por
+// trecho de uma carona). Operacoes que precisam reservar varios trechos
+// adquirem as travas em ordem alfabetica para evitar deadlocks.
 package concorrencia
 
-import "sync"
+import (
+	"sort"
+	"strconv"
+	"sync"
+)
 
-// Trava implementa o controle de concorrência mais simples possível:
-// uma única trava global, compartilhada por TODAS as operações, não
-// importa quais trechos estejam envolvidos.
+type entradaTrava struct {
+	mu          sync.Mutex
+	referencias int
+}
 
+// Trava administra uma trava independente para cada chave de trecho.
+// O mapa interno so serve para localizar a trava certa; ele nao protege
+// os dados do repositorio (isso e responsabilidade de estado.Repositorio).
 type Trava struct {
-	mu sync.RWMutex
+	mu     sync.Mutex
+	travas map[string]*entradaTrava
 }
 
-// NovaTrava cria uma trava global pronta para uso.
+// NovaTrava cria um gerenciador de travas por trecho.
 func NovaTrava() *Trava {
-	return &Trava{}
+	return &Trava{travas: make(map[string]*entradaTrava)}
 }
 
-// ComEscrita executa fn com acesso EXCLUSIVO: nenhuma outra chamada a
-// ComEscrita ou ComLeitura roda ao mesmo tempo. Use para qualquer
-// operação que MODIFICA o estado: PublicarCarona, ConfirmarReserva,
-// CancelarCarona, CancelarReserva.
-func (t *Trava) ComEscrita(fn func() error) error {
+// ChaveTrecho cria uma chave unica para um trecho elementar de uma carona.
+func ChaveTrecho(idCarona string, indice int) string {
+	return idCarona + ":" + strconv.Itoa(indice)
+}
+
+// ComTrechos executa fn enquanto possui as travas de todos os trechos
+// informados. Chaves repetidas sao removidas e a ordem e sempre a mesma,
+// independente da ordem recebida pelo chamador.
+func (t *Trava) ComTrechos(chaves []string, fn func() error) error {
+	if len(chaves) == 0 {
+		return fn()
+	}
+
+	// Copiamos antes de ordenar para nao alterar a slice do chamador.
+	ordenadas := append([]string(nil), chaves...)
+	sort.Strings(ordenadas)
+	unicas := ordenadas[:0]
+	for _, chave := range ordenadas {
+		if len(unicas) == 0 || unicas[len(unicas)-1] != chave {
+			unicas = append(unicas, chave)
+		}
+	}
+
+	// Registra as referencias antes de esperar pelas travas. Assim, uma
+	// trava nao pode ser removida do mapa enquanto outra goroutine espera nela.
+	entradas := make([]*entradaTrava, len(unicas))
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	return fn()
-}
+	for i, chave := range unicas {
+		entrada, existe := t.travas[chave]
+		if !existe {
+			entrada = &entradaTrava{}
+			t.travas[chave] = entrada
+		}
+		entrada.referencias++
+		entradas[i] = entrada
+	}
+	t.mu.Unlock()
 
-// ComLeitura executa fn com acesso COMPARTILHADO: outras chamadas a
-// ComLeitura podem rodar ao mesmo tempo, mas nenhuma ComEscrita roda
-// enquanto isto não terminar. Use para operações que só LEEM o estado:
-// BuscarItinerarios, ConsultarCaronas, ConsultarReservas.
-func (t *Trava) ComLeitura(fn func() error) error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
+	for _, entrada := range entradas {
+		entrada.mu.Lock()
+	}
+	defer func() {
+		// Libera em ordem inversa, como numa pilha.
+		for i := len(entradas) - 1; i >= 0; i-- {
+			entradas[i].mu.Unlock()
+		}
+
+		t.mu.Lock()
+		for i, chave := range unicas {
+			entradas[i].referencias--
+			if entradas[i].referencias == 0 {
+				delete(t.travas, chave)
+			}
+		}
+		t.mu.Unlock()
+	}()
+
 	return fn()
 }

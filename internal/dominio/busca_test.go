@@ -222,7 +222,7 @@ func TestBuscarItinerarios_EscolheMenorNumeroDeTrechos(t *testing.T) {
 		aresta("direta", 0, "A", "C", 2, 50), // so 1 trecho, mesmo sendo mais cara
 	})
 
-	resultado := BuscarTodosItinerarios(grafo, "A", "C")
+	resultado := BuscarItinerarios(grafo, "A", "C")
 
 	if len(resultado) != 1 || len(resultado[0].Passos) != 1 {
 		t.Fatalf("esperava a rota direta de 1 trecho, veio %+v", resultado)

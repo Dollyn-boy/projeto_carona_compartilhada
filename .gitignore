@@ -1,0 +1,3 @@
+# Estado persistente local; nao versionar cadastros e reservas de execucao.
+/dados/dados.json
+/dados/.dados-*.tmp
