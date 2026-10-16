@@ -61,8 +61,12 @@ func TestWorkerPoolComValoresInvalidosNaoFicaSemWorkers(t *testing.T) {
 
 func TestRequisicaoTCPPassaPeloWorkerPool(t *testing.T) {
 	conexaoServidor, conexaoCliente := net.Pipe()
+	// A conexaoServidor é usada pelo servidor, e a conexaoCliente é usada pelo teste para simular o cliente.
 	pool := novoWorkerPool(1, 2)
+	// O pool tem 1 worker e capacidade para 2 tarefas enfileiradas. Isso é suficiente para o teste, que envia apenas 1 requisicao.
 	repo := estado.NovoRepositorio()
+
+	// terminaServidor é um canal que será fechado quando a função tratarConexao terminar. Isso permite que o teste saiba quando o servidor terminou de processar a conexão.
 	terminouServidor := make(chan struct{})
 	go func() {
 		tratarConexao(conexaoServidor, repo, pool)
@@ -89,4 +93,6 @@ func TestRequisicaoTCPPassaPeloWorkerPool(t *testing.T) {
 	if resposta.Status != "ok" || resposta.IDRequisicao != requisicao.IDRequisicao {
 		t.Fatalf("resposta inesperada: %+v", resposta)
 	}
+
+	print("resposta recebida: ", string(resposta.Dados), "\n")
 }

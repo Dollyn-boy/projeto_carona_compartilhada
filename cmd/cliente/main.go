@@ -116,6 +116,7 @@ func loginCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 		usuario := lerLinha(leitor, "Nome de usuário: ")
 		senha := lerLinha(leitor, "Senha: ")
 
+		// Serializa os dados de login em JSON
 		dados, _ := json.Marshal(protocolo.LoginDados{Usuario: usuario, Senha: senha})
 
 		// Envia a requisicao de login para o servidor e trata a resposta.
@@ -182,6 +183,8 @@ func menuMotorista(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 }
 
 func publicarCarona(conexao *clientenet.Conexao, leitor *bufio.Reader) {
+	// Coleta os dados da carona do usuário.
+
 	rotaTexto := lerLinha(leitor, "Rota (cidades separadas por vírgula, ex: Salvador,Feira de Santana): ")
 	rota := strings.Split(rotaTexto, ",")
 	for i := range rota {
@@ -192,8 +195,10 @@ func publicarCarona(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	preco := lerInt(leitor, "Preço: ")
 	data := lerLinha(leitor, "Data (AAAA-MM-DD): ")
 
+	// Serializa os dados da carona em JSON
 	dados, _ := json.Marshal(protocolo.PublicarCaronaDados{Rota: rota, Capacidade: capacidade, Preco: preco, Data: data})
 
+	// Envia a requisicao de publicar carona para o servidor e trata a resposta.
 	resp, err := conexao.Enviar(protocolo.Requisicao{Tipo: "publicar_carona", IDRequisicao: novoIDRequisicao(), Dados: dados})
 	if err != nil {
 		fmt.Println("erro de rede:", err)
@@ -330,19 +335,23 @@ func buscarItinerarios(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 }
 
 func confirmarReserva(conexao *clientenet.Conexao, leitor *bufio.Reader) {
+	// Verifica se há uma busca recente para confirmar reserva. Se não houver, informa o usuário e retorna.
 	if len(ultimaBusca) == 0 {
 		fmt.Println("Busque um itinerário primeiro (opção 1).")
 		return
 	}
 
+	// Pede ao usuário o índice do itinerário que deseja confirmar reserva, e valida se o índice é válido.
 	indice := lerInt(leitor, fmt.Sprintf("Qual itinerário confirmar? (0 a %d): ", len(ultimaBusca)-1))
 	if indice < 0 || indice >= len(ultimaBusca) {
 		fmt.Println("Índice inválido.")
 		return
 	}
 
+	// Serializa os dados da confirmação de reserva em JSON, enviando os trechos do itinerário selecionado.
 	dados, _ := json.Marshal(protocolo.ConfirmarReservaDados{Trechos: ultimaBusca[indice].Trechos})
 
+	// Envia a requisição de confirmação de reserva para o servidor e trata a resposta.
 	resp, err := conexao.Enviar(protocolo.Requisicao{Tipo: "confirmar_reserva", IDRequisicao: novoIDRequisicao(), Dados: dados})
 	if err != nil {
 		fmt.Println("erro de rede:", err)

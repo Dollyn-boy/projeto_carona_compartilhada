@@ -24,14 +24,21 @@ import (
 // caminhoJSON vazio significa que o repositorio e apenas em memoria (util
 // nos testes que nao precisam persistir dados).
 type Repositorio struct {
-	mu          sync.RWMutex
-	trava       *concorrencia.Trava
+	// Protege os mapas e os identificadores do repositório contra acessos conflitantes.
+	mu sync.RWMutex
+
+	// Gerencia travas específicas para os trechos das caronas.
+	trava *concorrencia.Trava
+
+	// Indica onde salvar os dados. Se estiver vazio, o repositório funciona apenas em memória.
 	caminhoJSON string
 
 	caronas  map[string]*dominio.Carona
-	assentos map[string][]int // assentos livres por trecho elementar da carona
-	reservas map[string]*dominio.Reserva
-	usuarios map[string]*dominio.Usuario
+	assentos map[string][]int // assentos livres por trecho elementar da carona,
+	// ex.: A-B-C tem dois trechos, A-B e B-C, cada um com seu contador de assentos livres.
+	// assentos ["1"] = [2, 3] significa que a carona 1 tem 2 assentos livres no trecho A-B e 3 assentos livres no trecho B-C.
+	reservas map[string]*dominio.Reserva // Armazena reservas confirmadas
+	usuarios map[string]*dominio.Usuario // Armazena os usuários cadastrados e seus hashes de senha.
 
 	proximoIDCarona  int
 	proximoIDReserva int
@@ -93,18 +100,22 @@ type estadoPersistido struct {
 // Quando ha arquivo configurado, cria uma copia do estado anterior. Se o
 // salvamento falhar, restaura essa copia para memoria e disco nao divergirem.
 func (r *Repositorio) alterar(fn func() error) error {
+	// Adquirir mutex global para evitar alterações simultâneas no estado protegido.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Serializar o estado anterior para bytes JSON
 	var backup []byte
 	if r.caminhoJSON != "" {
 		var err error
+		// Se der erro ao serializar o estado anterior, devolve o erro sem alterar nada.
 		backup, err = r.serializarLocked()
 		if err != nil {
 			return fmt.Errorf("preparar estado anterior: %w", err)
 		}
 	}
 
+	// Executa a funcao de alteracao. Se der erro, devolve o erro sem alterar nada.
 	if err := fn(); err != nil {
 		return err
 	}
@@ -112,6 +123,8 @@ func (r *Repositorio) alterar(fn func() error) error {
 	if r.caminhoJSON == "" {
 		return nil
 	}
+
+	// Se houver caminhoJSON, tenta salvar o estado atual. Se falhar, restaura o backup.
 	if err := r.salvarLocked(); err != nil {
 		if erroRestaurar := r.aplicarJSONLocked(backup); erroRestaurar != nil {
 			return fmt.Errorf("erro ao salvar (%v) e erro ao restaurar estado anterior: %w", err, erroRestaurar)
@@ -134,8 +147,14 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 		return dominio.Carona{}, fmt.Errorf("data da carona nao pode estar no passado")
 	}
 
+	// A carona e criada dentro de r.alterar para garantir que o estado seja consistente e persistido corretamente.
 	var criada dominio.Carona
+
+	// r.alterar garante que a operacao seja atomica e que o estado seja salvo corretamente.
+	// se o salvamento falhar, a carona nao sera criada e o estado sera restaurado.
+	// A copia da carona e armazenada no mapa para evitar que referencias externas modifiquem o estado interno do repositorio.
 	err := r.alterar(func() error {
+		// Closure que cria a carona e inicializa os contadores de assentos livres para cada trecho da rota.
 		id := r.proximoIDCarona + 1
 		criada = dominio.Carona{
 			Id:         id,
@@ -152,6 +171,7 @@ func (r *Repositorio) PublicarCarona(motorista string, rota []dominio.Cidade, ca
 		}
 
 		r.proximoIDCarona = id
+		// Copia da carona e armazenada no mapa para evitar que referencias externas modifiquem o estado interno do repositorio.
 		copiaCarona := clonarCarona(criada)
 		r.caronas[chave] = &copiaCarona
 		r.assentos[chave] = livres
@@ -263,10 +283,16 @@ func (r *Repositorio) VerificarReserva(idReserva int) (bool, error) {
 // assento. O mutex de leitura protege o snapshot enquanto a busca e ordenacao
 // acontecem; a busca em si nao modifica o estado.
 func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]dominio.Itinerario, error) {
+	// O mutex de leitura protege o snapshot enquanto a busca e ordenacao acontecem; a busca em si nao modifica o estado.
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	// Construir uma lista de arestas disponiveis (trechos com assentos livres) para montar o grafo.
 	disponiveis := make([]dominio.ArestaDisponivel, 0)
+
+	// Iterar sobre todas as caronas e seus trechos para identificar quais ainda possuem assentos livres.
+	// Para construir o grafo, precisamos de uma lista de trechos disponíveis. Para obter essa lista,
+	// iteramos sobre todas as caronas do repositorio e verificamos os assentos livres em cada trecho.
 	for chave, carona := range r.caronas {
 		if carona.Data.Before(time.Now()) {
 			continue
@@ -274,6 +300,7 @@ func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]domin
 		for _, trecho := range dominio.TrechosDaRota(chave, carona.Rota) {
 			livres := r.assentos[chave][trecho.Indice]
 			if livres > 0 {
+				// Se houver assentos livres, adiciona a aresta ao grafo de itinerários disponíveis.
 				disponiveis = append(disponiveis, dominio.ArestaDisponivel{
 					Trecho: trecho, AssentosDisponiveis: livres, Preco: float64(carona.Preco),
 				})
@@ -281,7 +308,11 @@ func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]domin
 		}
 	}
 
+	// Montar o grafo e buscar todos os itinerários possíveis entre a origem e o destino.
 	itinerarios := dominio.BuscarTodosItinerarios(dominio.ConstruirGrafo(disponiveis), origem, destino)
+
+	// Ordenar os itinerários encontrados: primeiro pelo número de trechos, depois pelo preço total.
+	// Isso garante que o cliente receba os itinerários mais curtos e baratos primeiro.
 	sort.Slice(itinerarios, func(i, j int) bool {
 		if len(itinerarios[i].Passos) != len(itinerarios[j].Passos) {
 			return len(itinerarios[i].Passos) < len(itinerarios[j].Passos)
@@ -305,14 +336,19 @@ func (r *Repositorio) precoTotalItinerarioLocked(it dominio.Itinerario) int {
 // Primeiro adquire travas por trecho em ordem fixa; depois valida toda a rota
 // e aplica a mudanca como uma unica operacao do repositorio.
 func (r *Repositorio) ConfirmarReserva(passageiro string, itinerario dominio.Itinerario) (dominio.Reserva, error) {
+	// 1. Valida se o itinerario nao esta vazio
 	var criada dominio.Reserva
 	if len(itinerario.Passos) == 0 {
 		return criada, fmt.Errorf("itinerario vazio")
 	}
+
+	// 2. Cria uma copia dos trechos do itinerario para evitar modificacoes externas durante a operacao.
 	passos := append([]dominio.Trecho(nil), itinerario.Passos...)
-	chaves := make([]string, len(passos))
-	idsCarona := make([]int, len(passos))
-	vistos := make(map[string]bool)
+	chaves := make([]string, len(passos)) // armazenará as chaves das travas.
+	idsCarona := make([]int, len(passos)) //armazenará os IDs numéricos das caronas.
+	vistos := make(map[string]bool)       // para verificar se o itinerário contém trechos duplicados.
+
+	// 3. Valida cada trecho: índice válido, ID de carona válido e sem duplicatas.
 	for i, trecho := range passos {
 		if trecho.Indice < 0 {
 			return criada, fmt.Errorf("indice de trecho invalido: %d", trecho.Indice)
@@ -321,6 +357,8 @@ func (r *Repositorio) ConfirmarReserva(passageiro string, itinerario dominio.Iti
 		if err != nil || id <= 0 {
 			return criada, fmt.Errorf("id de carona invalido no trecho: %q", trecho.IDCarona)
 		}
+
+		// 4. Prepara as chaves para travas e verifica se o mesmo trecho aparece mais de uma vez no itinerário.
 		idsCarona[i] = id
 		chaves[i] = concorrencia.ChaveTrecho(trecho.IDCarona, trecho.Indice)
 		if vistos[chaves[i]] {
@@ -329,6 +367,8 @@ func (r *Repositorio) ConfirmarReserva(passageiro string, itinerario dominio.Iti
 		vistos[chaves[i]] = true
 	}
 
+	// 5. Adquire travas para todos os trechos do itinerário em ordem fixa e executa a operação de reserva.
+	// Se a operação falhar, nenhuma alteração será feita e o estado do repositório permanecerá consistente.
 	err := r.trava.ComTrechos(chaves, func() error {
 		return r.alterar(func() error {
 			// Validacao completa antes de alterar qualquer contador.
@@ -346,6 +386,7 @@ func (r *Repositorio) ConfirmarReserva(passageiro string, itinerario dominio.Iti
 				}
 			}
 
+			// Se todas as validacoes passaram, cria a reserva e decrementa os contadores de assentos livres.
 			itens := make([]dominio.ItemReserva, len(passos))
 			for i, trecho := range passos {
 				itens[i] = dominio.ItemReserva{CaronaID: idsCarona[i], Trecho: trecho}
@@ -436,9 +477,11 @@ func (r *Repositorio) CadastrarUsuario(usuario string, senha string, role string
 
 // AutenticarUsuario verifica a senha e devolve o papel do usuario.
 func (r *Repositorio) AutenticarUsuario(usuario string, senha string) (bool, string, error) {
+	// Acesso de leitura, pois nao altera o estado do repositorio.
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	// Verifica se o usuario existe e se a senha bate com o hash armazenado.
 	usuarioObj, existe := r.usuarios[usuario]
 	if !existe {
 		return false, "", fmt.Errorf("usuario %s nao encontrado", usuario)
@@ -477,6 +520,7 @@ func clonarReserva(r dominio.Reserva) dominio.Reserva {
 	return r
 }
 
+// estadoLocked cria uma copia do estado atual, pronta para serializar em JSON.
 func (r *Repositorio) estadoLocked() estadoPersistido {
 	e := estadoPersistido{
 		Versao: 1, ProximoIDCarona: r.proximoIDCarona, ProximoIDReserva: r.proximoIDReserva,
@@ -503,10 +547,12 @@ func (r *Repositorio) estadoLocked() estadoPersistido {
 	return e
 }
 
+// serializarLocked converte o estado atual em JSON indentado, pronto para salvar em arquivo.
 func (r *Repositorio) serializarLocked() ([]byte, error) {
 	return json.MarshalIndent(r.estadoLocked(), "", "  ")
 }
 
+// salvarLocked grava o estado atual em arquivo JSON, criando o diretório se necessario e usando um arquivo temporario para evitar corrupcao.
 func (r *Repositorio) salvarLocked() error {
 	conteudo, err := r.serializarLocked()
 	if err != nil {

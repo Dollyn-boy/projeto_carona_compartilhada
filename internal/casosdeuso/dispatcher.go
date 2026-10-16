@@ -14,12 +14,12 @@ import (
 
 // Despachar decide o que fazer com uma requisição já parseada, com base
 // em req.Tipo, e devolve a resposta correspondente.
-//
 
 func Despachar(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
 
 	limiteInatividade := 30 * time.Minute
 	if sessao.Autenticado {
+		// Se o usuário está autenticado, verifica se a sessão expirou por inatividade.
 		if time.Since(sessao.UltimaAtividade) > limiteInatividade {
 			// Tempo estourou: desloga o usuário forçadamente
 			sessao.Autenticado = false
@@ -77,13 +77,15 @@ func Despachar(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisica
 	}
 }
 
-
 func tratarLogin(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
 	var dados protocolo.LoginDados
+
+	// Se der erro ao desserializar os dados, devolve uma resposta de erro.
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
 	}
 
+	// Valida o login chamando o repositório. Se der certo, autentica o usuário na sessão.
 	autenticado, role, err := repo.AutenticarUsuario(dados.Usuario, dados.Senha)
 	if err != nil || !autenticado {
 		return erro(req, "usuario ou senha invalidos")
@@ -113,6 +115,7 @@ func tratarLogout(sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
 }
 
 func tratarCadastro(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requisicao) protocolo.Resposta {
+	// Tudo que tratarCadastro faz é validar os dados e chamar repo.CadastrarUsuario. Se der certo, autentica o usuário na sessão.
 	var dados protocolo.CadastroDados
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
@@ -126,7 +129,7 @@ func tratarCadastro(repo *estado.Repositorio, sessao *Sessao, req protocolo.Requ
 	}
 
 	if err := repo.CadastrarUsuario(dados.Usuario, dados.Senha, dados.Role); err != nil {
-		return erro(req, err.Error()) 
+		return erro(req, err.Error())
 	}
 
 	sessao.Autenticado = true
@@ -173,7 +176,9 @@ func caronaParaResposta(c dominio.Carona) protocolo.CaronaResposta {
 	}
 }
 
+// tratarPing é um caso de uso trivial que responde "pong" a qualquer requisição "ping".
 func tratarPing(req protocolo.Requisicao) protocolo.Resposta {
+	// Json Marshal retorna um slice de bytes e um erro. Aqui ignoramos o erro porque sabemos que "pong" é serializável.
 	dados, _ := json.Marshal("pong")
 	return protocolo.Resposta{
 		Status:       "ok",

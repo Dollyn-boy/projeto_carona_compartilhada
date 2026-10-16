@@ -11,11 +11,16 @@ import (
 
 // tratarPublicarCarona agora recebe usuario da Sessão
 func tratarPublicarCarona(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
+
+	// 1. Parseia os dados da requisição
 	var dados protocolo.PublicarCaronaDados
+
+	// 2. Valida os dados da requisição
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
 	}
 
+	// 3. Converte a rota de []string para []dominio.Cidade
 	rota := make([]dominio.Cidade, len(dados.Rota))
 	for i, cidade := range dados.Rota {
 		rota[i] = dominio.Cidade(cidade)

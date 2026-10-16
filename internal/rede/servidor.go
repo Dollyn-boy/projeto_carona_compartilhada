@@ -186,12 +186,11 @@ func IniciarComWorkers(endereco string, repo *estado.Repositorio, numeroWorkers,
 }
 
 // tratarConexao administra uma conexao TCP durante o tempo em que estiver aberta.
-// Cada conexao tem seu leitor e sua sessao de autenticacao.
-// Isso cria uma goroutine responsável pela conexão daquele cliente.
-// Observe que ela recebe o mesmo pool que será utilizado pelas outras conexões.
+// Enfileira cada requisicao recebida para o pool de workers e envia a resposta de volta ao cliente.
 func tratarConexao(conn net.Conn, repo *estado.Repositorio, pool *workerPool) {
 	defer conn.Close() // Ao sair deste metodo, encerra o socket do cliente.
 
+	// conexaoCliente empacota o socket e o mutex para proteger as escritas.
 	cliente := &conexaoCliente{conn: conn}
 	reader := bufio.NewReader(conn)   // Reutiliza o buffer para ler mensagens completas.
 	sessao := casosdeuso.NovaSessao() // Login e dados de sessao pertencem a esta conexao.

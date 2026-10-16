@@ -29,7 +29,9 @@ func itinerarioParaDados(it dominio.Itinerario) protocolo.ItinerarioDados {
 // []TrechoDados, e aqui reconstruimos o dominio.Itinerario que
 // repo.ConfirmarReserva espera.
 func dadosParaItinerario(trechos []protocolo.TrechoDados) dominio.Itinerario {
-	passos := make([]dominio.Trecho, len(trechos))
+	passos := make([]dominio.Trecho, len(trechos)) // cria slice de tamanho correto
+
+	// Para cada trecho recebido do cliente, converte para dominio.Trecho e coloca no slice passos.
 	for i, t := range trechos {
 		passos[i] = dominio.Trecho{
 			IDCarona: t.IDCarona,
@@ -38,6 +40,7 @@ func dadosParaItinerario(trechos []protocolo.TrechoDados) dominio.Itinerario {
 			Destino:  dominio.Cidade(t.Destino),
 		}
 	}
+	// Retorna um dominio.Itinerario com os passos reconstruídos.
 	return dominio.Itinerario{Passos: passos}
 }
 
@@ -70,10 +73,13 @@ func reservaParaResposta(r dominio.Reserva) protocolo.ReservaResposta {
 // carona.go). Se adicionar isso depois, e aqui que o filtro entra.
 func tratarBuscarItinerarios(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
 	var dados protocolo.BuscarItinerariosDados
+
+	// 2. Valida os dados da requisição
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
 	}
 
+	// 3. Converte origem/destino de string para dominio.Cidade e chama repo.BuscarItinerarios
 	itinerarios, err := repo.BuscarItinerarios(dominio.Cidade(dados.Origem), dominio.Cidade(dados.Destino))
 	if err != nil {
 		return erro(req, err.Error())
@@ -90,13 +96,16 @@ func tratarBuscarItinerarios(repo *estado.Repositorio, req protocolo.Requisicao)
 // tratarConfirmarReserva agora usa o usuario da sessão
 func tratarConfirmarReserva(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
 	var dados protocolo.ConfirmarReservaDados
+
+	// 1. Desserializa os dados da requisição (trechos do itinerário escolhido)
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
 	}
 
+	// 2. Converte os trechos de []TrechoDados para dominio.Itinerario
 	itinerario := dadosParaItinerario(dados.Trechos)
 
-	// SEGURANÇA: Usamos usuario em vez de dados.Passageiro
+	// 3. Chama repo.ConfirmarReserva com o usuário da sessão e o itinerário reconstruído
 	reserva, err := repo.ConfirmarReserva(usuario, itinerario)
 	if err != nil {
 		return erro(req, err.Error())
