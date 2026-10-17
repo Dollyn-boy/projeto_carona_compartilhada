@@ -34,7 +34,6 @@ type CadastroDados struct {
 	Senha   string `json:"senha"`
 }
 
-
 type PublicarCaronaDados struct {
 	Rota       []string `json:"rota"`
 	Capacidade int      `json:"capacidade"`
@@ -68,12 +67,12 @@ type CancelarReservaDados struct {
 	IDReserva int `json:"id_reserva"`
 }
 
-
 type TrechoDados struct {
-	IDCarona string `json:"id_carona"`
-	Indice   int    `json:"indice"`
-	Origem   string `json:"origem"`
-	Destino  string `json:"destino"`
+	EmpresaID string `json:"empresa_id"`
+	IDCarona  string `json:"id_carona"`
+	Indice    int    `json:"indice"`
+	Origem    string `json:"origem"`
+	Destino   string `json:"destino"`
 }
 
 type ItinerarioDados struct {

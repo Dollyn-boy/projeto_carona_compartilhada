@@ -15,10 +15,11 @@ func itinerarioParaDados(it dominio.Itinerario) protocolo.ItinerarioDados {
 	trechos := make([]protocolo.TrechoDados, len(it.Passos))
 	for i, t := range it.Passos {
 		trechos[i] = protocolo.TrechoDados{
-			IDCarona: t.IDCarona,
-			Indice:   t.Indice,
-			Origem:   string(t.Origem),
-			Destino:  string(t.Destino),
+			EmpresaID: t.EmpresaID,
+			IDCarona:  t.IDCarona,
+			Indice:    t.Indice,
+			Origem:    string(t.Origem),
+			Destino:   string(t.Destino),
 		}
 	}
 	return protocolo.ItinerarioDados{Trechos: trechos}
@@ -34,10 +35,11 @@ func dadosParaItinerario(trechos []protocolo.TrechoDados) dominio.Itinerario {
 	// Para cada trecho recebido do cliente, converte para dominio.Trecho e coloca no slice passos.
 	for i, t := range trechos {
 		passos[i] = dominio.Trecho{
-			IDCarona: t.IDCarona,
-			Indice:   t.Indice,
-			Origem:   dominio.Cidade(t.Origem),
-			Destino:  dominio.Cidade(t.Destino),
+			EmpresaID: t.EmpresaID,
+			IDCarona:  t.IDCarona,
+			Indice:    t.Indice,
+			Origem:    dominio.Cidade(t.Origem),
+			Destino:   dominio.Cidade(t.Destino),
 		}
 	}
 	// Retorna um dominio.Itinerario com os passos reconstruídos.
@@ -51,10 +53,11 @@ func reservaParaResposta(r dominio.Reserva) protocolo.ReservaResposta {
 	trechos := make([]protocolo.TrechoDados, len(r.Itens))
 	for i, item := range r.Itens {
 		trechos[i] = protocolo.TrechoDados{
-			IDCarona: item.Trecho.IDCarona,
-			Indice:   item.Trecho.Indice,
-			Origem:   string(item.Trecho.Origem),
-			Destino:  string(item.Trecho.Destino),
+			EmpresaID: item.Trecho.EmpresaID,
+			IDCarona:  item.Trecho.IDCarona,
+			Indice:    item.Trecho.Indice,
+			Origem:    string(item.Trecho.Origem),
+			Destino:   string(item.Trecho.Destino),
 		}
 	}
 	return protocolo.ReservaResposta{

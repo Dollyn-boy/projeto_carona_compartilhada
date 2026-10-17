@@ -24,6 +24,7 @@ import (
 // caminhoJSON vazio significa que o repositorio e apenas em memoria (util
 // nos testes que nao precisam persistir dados).
 type Repositorio struct {
+	empresaID string
 	// Protege os mapas e os identificadores do repositório contra acessos conflitantes.
 	mu sync.RWMutex
 
@@ -41,21 +42,45 @@ type Repositorio struct {
 	proximoIDReserva int
 }
 
-// NovoRepositorio cria um repositorio em memoria, sem arquivo persistente.
-// Use NovoRepositorioComArquivo no servidor para manter os dados entre reinicios.
 func NovoRepositorio() *Repositorio {
-	return novoRepositorio("")
+	return novoRepositorio("local", "")
 }
 
-// NovoRepositorioComArquivo carrega os dados do caminho informado. Se o
-// arquivo ainda nao existir, inicia um repositorio vazio e o cria na primeira
-// alteracao bem-sucedida.
+// Mantem compatibilidade com o codigo existente e com os testes.
+// O identificador "local" e usado quando nenhuma empresa e especificada.
 func NovoRepositorioComArquivo(caminho string) (*Repositorio, error) {
-	if strings.TrimSpace(caminho) == "" {
+	return NovoRepositorioDeEmpresaComArquivo("local", caminho)
+}
+
+// NovoRepositorioDeEmpresa cria um repositorio em memoria
+// vinculado a uma empresa especifica.
+func NovoRepositorioDeEmpresa(empresaID string) (*Repositorio, error) {
+	empresaID = strings.TrimSpace(empresaID)
+	if empresaID == "" {
+		return nil, fmt.Errorf("identificador da empresa nao pode ser vazio")
+	}
+
+	return novoRepositorio(empresaID, ""), nil
+}
+
+// NovoRepositorioDeEmpresaComArquivo cria o repositorio e carrega
+// os dados persistidos daquela empresa, caso o arquivo exista.
+func NovoRepositorioDeEmpresaComArquivo(
+	empresaID string,
+	caminho string,
+) (*Repositorio, error) {
+	empresaID = strings.TrimSpace(empresaID)
+	caminho = strings.TrimSpace(caminho)
+
+	if empresaID == "" {
+		return nil, fmt.Errorf("identificador da empresa nao pode ser vazio")
+	}
+	if caminho == "" {
 		return nil, fmt.Errorf("caminho do arquivo JSON nao pode ser vazio")
 	}
 
-	r := novoRepositorio(caminho)
+	r := novoRepositorio(empresaID, caminho)
+
 	conteudo, err := os.ReadFile(caminho)
 	if errors.Is(err, os.ErrNotExist) {
 		return r, nil
@@ -63,14 +88,17 @@ func NovoRepositorioComArquivo(caminho string) (*Repositorio, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ler arquivo de dados %q: %w", caminho, err)
 	}
+
 	if err := r.aplicarJSON(conteudo); err != nil {
 		return nil, fmt.Errorf("carregar arquivo de dados %q: %w", caminho, err)
 	}
+
 	return r, nil
 }
 
-func novoRepositorio(caminho string) *Repositorio {
+func novoRepositorio(empresaID, caminho string) *Repositorio {
 	return &Repositorio{
+		empresaID:   empresaID,
 		trava:       concorrencia.NovaTrava(),
 		caminhoJSON: caminho,
 		caronas:     make(map[string]*dominio.Carona),
@@ -84,6 +112,7 @@ func novoRepositorio(caminho string) *Repositorio {
 // inteiro torna a persistencia facil de entender: cada salvamento descreve
 // todo o estado atual, em vez de manter uma sequencia de eventos para repetir.
 type estadoPersistido struct {
+	EmpresaID        string            `json:"empresa_id"`
 	Versao           int               `json:"versao"`
 	ProximoIDCarona  int               `json:"proximo_id_carona"`
 	ProximoIDReserva int               `json:"proximo_id_reserva"`
@@ -304,7 +333,7 @@ func (r *Repositorio) BuscarItinerarios(origem, destino dominio.Cidade) ([]domin
 		if carona.Data.Before(time.Now()) {
 			continue
 		}
-		for _, trecho := range dominio.TrechosDaRota(chave, carona.Rota) {
+		for _, trecho := range dominio.TrechosDaRota(r.empresaID, chave, carona.Rota) {
 			livres := r.assentos[chave][trecho.Indice]
 			if livres > 0 {
 				// Se houver assentos livres, adiciona a aresta ao grafo de itinerários disponíveis.
@@ -357,6 +386,13 @@ func (r *Repositorio) ConfirmarReserva(passageiro string, itinerario dominio.Iti
 
 	// 3. Valida cada trecho: índice válido, ID de carona válido e sem duplicatas.
 	for i, trecho := range passos {
+		if trecho.EmpresaID != r.empresaID {
+			return criada, fmt.Errorf(
+				"trecho da empresa %q nao pode ser reservado pelo servidor da empresa %q",
+				trecho.EmpresaID,
+				r.empresaID,
+			)
+		}
 		if trecho.Indice < 0 {
 			return criada, fmt.Errorf("indice de trecho invalido: %d", trecho.Indice)
 		}
@@ -530,11 +566,14 @@ func clonarReserva(r dominio.Reserva) dominio.Reserva {
 // estadoLocked cria uma copia do estado atual, pronta para serializar em JSON.
 func (r *Repositorio) estadoLocked() estadoPersistido {
 	e := estadoPersistido{
-		Versao: 1, ProximoIDCarona: r.proximoIDCarona, ProximoIDReserva: r.proximoIDReserva,
-		Assentos: make(map[string][]int, len(r.assentos)),
-		Caronas:  make([]dominio.Carona, 0, len(r.caronas)),
-		Reservas: make([]dominio.Reserva, 0, len(r.reservas)),
-		Usuarios: make([]dominio.Usuario, 0, len(r.usuarios)),
+		EmpresaID:        r.empresaID,
+		Versao:           1,
+		ProximoIDCarona:  r.proximoIDCarona,
+		ProximoIDReserva: r.proximoIDReserva,
+		Assentos:         make(map[string][]int, len(r.assentos)),
+		Caronas:          make([]dominio.Carona, 0, len(r.caronas)),
+		Reservas:         make([]dominio.Reserva, 0, len(r.reservas)),
+		Usuarios:         make([]dominio.Usuario, 0, len(r.usuarios)),
 	}
 	for chave, carona := range r.caronas {
 		e.Caronas = append(e.Caronas, clonarCarona(*carona))
@@ -609,6 +648,14 @@ func (r *Repositorio) aplicarJSONLocked(conteudo []byte) error {
 	}
 	if e.Versao != 1 {
 		return fmt.Errorf("versao do arquivo JSON nao suportada: %d", e.Versao)
+	}
+
+	if e.EmpresaID != "" && e.EmpresaID != r.empresaID {
+		return fmt.Errorf(
+			"arquivo pertence a empresa %q, mas o servidor foi configurado como %q",
+			e.EmpresaID,
+			r.empresaID,
+		)
 	}
 
 	caronas := make(map[string]*dominio.Carona, len(e.Caronas))

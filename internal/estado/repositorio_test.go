@@ -56,7 +56,7 @@ func TestRepositorioPersisteERecarregaJSONRepo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota(strconv.Itoa(carona.Id), carona.Rota)}
+	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("local", strconv.Itoa(carona.Id), carona.Rota)}
 	if _, err := repo.ConfirmarReserva("ana", itinerario); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestDisputaPeloUltimoAssento(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("1", carona.Rota)}
+	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("local", "1", carona.Rota)}
 
 	// Iniciar 20 Go Routines
 	const tentativas = 20
@@ -236,7 +236,7 @@ func TestReservaConcorrenteNaoVendeDuasVezes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("1", carona.Rota)}
+	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("local", "1", carona.Rota)}
 
 	const passageiros = 20
 	var sucessos atomic.Int32
@@ -274,7 +274,7 @@ func TestReservaDeItinerarioEAtomica(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	trechos := dominio.TrechosDaRota("1", carona.Rota)
+	trechos := dominio.TrechosDaRota("local", "1", carona.Rota)
 	if _, err := repo.ConfirmarReserva("primeiro", dominio.Itinerario{Passos: []dominio.Trecho{trechos[0]}}); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestRepositorioPersisteERecarregaJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("1", carona.Rota)}
+	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("local", "1", carona.Rota)}
 	if _, err := repo.ConfirmarReserva("ana", itinerario); err != nil {
 		t.Fatal(err)
 	}
@@ -362,5 +362,80 @@ func TestFalhaAoSalvarDesfazAlteracaoEmMemoria(t *testing.T) {
 	}
 	if len(caronas) != 0 {
 		t.Fatalf("o estado em memoria nao foi revertido apos falha de persistencia: %+v", caronas)
+	}
+}
+
+func TestTrechoDeOutraEmpresaNaoPodeSerReservado(t *testing.T) {
+	repoA, err := NovoRepositorioDeEmpresa("empresa-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repoB, err := NovoRepositorioDeEmpresa("empresa-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// As duas empresas possuem uma carona com o mesmo ID local.
+	caronaA, err := repoA.PublicarCarona(
+		"motorista-a",
+		[]dominio.Cidade{"A", "B"},
+		1,
+		10,
+		dataFutura(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	caronaB, err := repoB.PublicarCarona(
+		"motorista-b",
+		[]dominio.Cidade{"A", "B"},
+		1,
+		10,
+		dataFutura(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if caronaA.Id != caronaB.Id {
+		t.Fatalf(
+			"esperava IDs locais iguais, mas recebi %d e %d",
+			caronaA.Id,
+			caronaB.Id,
+		)
+	}
+
+	// Obtém um itinerário real retornado pelo repositório A.
+	itinerarios, err := repoA.BuscarItinerarios("A", "B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(itinerarios) == 0 {
+		t.Fatal("empresa A deveria ter um itinerário disponível")
+	}
+
+	trecho := itinerarios[0].Passos[0]
+	if trecho.EmpresaID != "empresa-a" {
+		t.Fatalf(
+			"esperava empresa-a, mas o trecho indica %q",
+			trecho.EmpresaID,
+		)
+	}
+
+	// Mesmo com uma carona de mesmo ID, B não pode reservar
+	// o trecho que foi identificado como pertencente a A.
+	_, err = repoB.ConfirmarReserva("passageiro-teste", itinerarios[0])
+	if err == nil {
+		t.Fatal("empresa B aceitou indevidamente um trecho de empresa A")
+	}
+
+	reservas, err := repoB.ConsultarReservas("passageiro-teste")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reservas) != 0 {
+		t.Fatal("a tentativa rejeitada nao deveria criar reserva")
 	}
 }

@@ -29,7 +29,10 @@ func main() {
 		arquivo = filepath.Join("dados", "dados.json")
 	}
 
-	repo, err := estado.NovoRepositorioComArquivo(arquivo)
+	repo, err := estado.NovoRepositorioDeEmpresaComArquivo(
+		empresaID,
+		arquivo,
+	)
 	if err != nil {
 		log.Fatalf("nao foi possivel abrir os dados: %v", err)
 	}
