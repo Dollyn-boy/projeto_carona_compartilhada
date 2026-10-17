@@ -4,15 +4,26 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"vaijunto/internal/estado"
 	"vaijunto/internal/rede"
 )
 
 func main() {
-	// Por padrao, o servidor grava os dados em ./dados/dados.json.
-	// Docker Compose configura um volume persistente e substitui esse caminho
-	// pela variavel VAIJUNTO_ARQUIVO_DADOS.
+	// Identificação da instância do servidor que irá rodar
+	empresaID := strings.TrimSpace(os.Getenv("VAIJUNTO_EMPRESA_ID"))
+
+	if empresaID == "" {
+		empresaID = "vaijunto-local"
+	}
+
+	// Endereco no qual o servidor vai escutar.
+	endereco := strings.TrimSpace(os.Getenv("VAIJUNTO_ENDERECO"))
+	if endereco == "" {
+		endereco = ":8080"
+	}
+
 	arquivo := os.Getenv("VAIJUNTO_ARQUIVO_DADOS")
 	if arquivo == "" {
 		arquivo = filepath.Join("dados", "dados.json")
@@ -22,9 +33,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("nao foi possivel abrir os dados: %v", err)
 	}
-	log.Printf("dados carregados de %s", arquivo)
 
-	if err := rede.Iniciar(":8080", repo); err != nil {
+	log.Printf("empresa=%s; dados carregados de %s", empresaID, arquivo)
+
+	if err := rede.Iniciar(endereco, repo); err != nil {
 		log.Fatal(err)
 	}
 }

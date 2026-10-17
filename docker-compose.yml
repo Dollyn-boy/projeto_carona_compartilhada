@@ -1,27 +1,55 @@
 
-
 services:
-  servidor:
+  servidor-a:
     build:
-      context: .                          # raiz do repo = contexto do build (o que o COPY . . do Dockerfile enxerga)
+      context: .
       dockerfile: docker/Dockerfile.servidor
     ports:
       - "8080:8080"
     environment:
+      VAIJUNTO_EMPRESA_ID: empresa-a
+      VAIJUNTO_ENDERECO: ":8080"
       VAIJUNTO_ARQUIVO_DADOS: /dados/dados.json
     volumes:
-      - vaijunto-dados:/dados
+      - vaijunto-a-dados:/dados
+
+  servidor-b:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.servidor
+    ports:
+      - "8081:8080"
+    environment:
+      VAIJUNTO_EMPRESA_ID: empresa-b
+      VAIJUNTO_ENDERECO: ":8080"
+      VAIJUNTO_ARQUIVO_DADOS: /dados/dados.json
+    volumes:
+      - vaijunto-b-dados:/dados
+
+  servidor-c:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.servidor
+    ports:
+      - "8082:8080"
+    environment:
+      VAIJUNTO_EMPRESA_ID: empresa-c
+      VAIJUNTO_ENDERECO: ":8080"
+      VAIJUNTO_ARQUIVO_DADOS: /dados/dados.json
+    volumes:
+      - vaijunto-c-dados:/dados
 
   cliente:
     build:
       context: .
       dockerfile: docker/Dockerfile.cliente
     depends_on:
-      - servidor                          # garante que o container do servidor SOBE antes,
-                                           # mas nao garante que ja esta ESCUTANDO — ver nota no README.
-    command: ["-servidor", "servidor:8080"]  # vira argv do ENTRYPOINT do Dockerfile.cliente
-    stdin_open: true                      # necessario para o cliente ler input interativo (cadastro/login/menu)
+      - servidor-a
+    command: ["-servidor", "servidor-a:8080"]
+    stdin_open: true
     tty: true
 
 volumes:
-  vaijunto-dados:
+  vaijunto-a-dados:
+  vaijunto-b-dados:
+  vaijunto-c-dados:

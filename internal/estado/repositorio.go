@@ -30,15 +30,12 @@ type Repositorio struct {
 	// Gerencia travas específicas para os trechos das caronas.
 	trava *concorrencia.Trava
 
-	// Indica onde salvar os dados. Se estiver vazio, o repositório funciona apenas em memória.
 	caminhoJSON string
 
 	caronas  map[string]*dominio.Carona
-	assentos map[string][]int // assentos livres por trecho elementar da carona,
-	// ex.: A-B-C tem dois trechos, A-B e B-C, cada um com seu contador de assentos livres.
-	// assentos ["1"] = [2, 3] significa que a carona 1 tem 2 assentos livres no trecho A-B e 3 assentos livres no trecho B-C.
-	reservas map[string]*dominio.Reserva // Armazena reservas confirmadas
-	usuarios map[string]*dominio.Usuario // Armazena os usuários cadastrados e seus hashes de senha.
+	assentos map[string][]int // Guarda quantos assentos ainda estão livres em cada trecho de cada carona.
+	reservas map[string]*dominio.Reserva
+	usuarios map[string]*dominio.Usuario
 
 	proximoIDCarona  int
 	proximoIDReserva int
@@ -99,6 +96,12 @@ type estadoPersistido struct {
 // alterar executa uma modificacao protegida pelo mutex do repositorio.
 // Quando ha arquivo configurado, cria uma copia do estado anterior. Se o
 // salvamento falhar, restaura essa copia para memoria e disco nao divergirem.
+
+// Atenção: As funções passadas a alterar precisam evitar
+//
+//	modificações parciais antes de retornar um erro,
+//	ou a própria implementação de alterar precisa ser
+//	fortalecida para cobrir esse cenário.
 func (r *Repositorio) alterar(fn func() error) error {
 	// Adquirir mutex global para evitar alterações simultâneas no estado protegido.
 	r.mu.Lock()
@@ -108,7 +111,7 @@ func (r *Repositorio) alterar(fn func() error) error {
 	var backup []byte
 	if r.caminhoJSON != "" {
 		var err error
-		// Se der erro ao serializar o estado anterior, devolve o erro sem alterar nada.
+		// Salvar o estado do repositório antes de qualquer modificação.
 		backup, err = r.serializarLocked()
 		if err != nil {
 			return fmt.Errorf("preparar estado anterior: %w", err)
@@ -116,16 +119,20 @@ func (r *Repositorio) alterar(fn func() error) error {
 	}
 
 	// Executa a funcao de alteracao. Se der erro, devolve o erro sem alterar nada.
+	// Não se deve incluir chamadas para outros métodos em fn() para evitar deadlocks
 	if err := fn(); err != nil {
 		return err
 	}
 
+	// Se não existe caminho configurado, a alteração já foi feita em memória,
+	//  então alterar retorna sem gravar um arquivo.
 	if r.caminhoJSON == "" {
 		return nil
 	}
 
 	// Se houver caminhoJSON, tenta salvar o estado atual. Se falhar, restaura o backup.
 	if err := r.salvarLocked(); err != nil {
+		// Essa é a função de recuperação/rollback
 		if erroRestaurar := r.aplicarJSONLocked(backup); erroRestaurar != nil {
 			return fmt.Errorf("erro ao salvar (%v) e erro ao restaurar estado anterior: %w", err, erroRestaurar)
 		}
@@ -541,6 +548,7 @@ func (r *Repositorio) estadoLocked() estadoPersistido {
 	for _, usuario := range r.usuarios {
 		e.Usuarios = append(e.Usuarios, *usuario)
 	}
+
 	sort.Slice(e.Caronas, func(i, j int) bool { return e.Caronas[i].Id < e.Caronas[j].Id })
 	sort.Slice(e.Reservas, func(i, j int) bool { return e.Reservas[i].Id < e.Reservas[j].Id })
 	sort.Slice(e.Usuarios, func(i, j int) bool { return e.Usuarios[i].Usuario < e.Usuarios[j].Usuario })

@@ -23,9 +23,9 @@ type entradaTrava struct {
 	referencias int        // Conta quantas operações estão usando ou aguardando aquela entrada de trava.
 }
 
-// Trava e um gerenciador de travas por trecho. Ele possui um mutex para
-// proteger o acesso ao mapa de travas e um mapa de chaves de trecho para
-// entradas de trava.
+// Trava e um gerenciador de travas por trecho.
+// Protege o mapa que relaciona uma chave, como "7:0", ao objeto de trava daquele trecho.
+// Ele não protege diretamente os mapas de caronas, assentos ou reservas.
 type Trava struct {
 	mu     sync.Mutex               // Protege o mapa que associa cada chave à sua trava.
 	travas map[string]*entradaTrava // Mapa referenciando cada trava por chave de trecho.
@@ -45,6 +45,7 @@ func ChaveTrecho(idCarona string, indice int) string {
 // Recebe as chaves dos trechos que precisam ser protegidos, adquira suas travas,
 // execute fn() enquanto elas estiverem adquiridas e, ao terminar, libere as travas.
 func (t *Trava) ComTrechos(chaves []string, fn func() error) error {
+	// Se não houver chaves, apenas executa a função sem travas.
 	if len(chaves) == 0 {
 		return fn()
 	}
@@ -84,8 +85,7 @@ func (t *Trava) ComTrechos(chaves []string, fn func() error) error {
 	// Libera o mutex do gerenciador de travas, pois ja temos todas as entradas de trava que precisamos.
 	t.mu.Unlock()
 
-	// Adquire o mutex de cada entrada de trava em ordem, para evitar deadlocks.
-	// Se outra operação estiver utilizando o mesmo trecho, a execução aguardará nessa linha até que a trava seja liberada.
+	// Trava cada entrada de trava na ordem das chaves unicas.
 	for _, entrada := range entradas {
 		entrada.mu.Lock()
 	}

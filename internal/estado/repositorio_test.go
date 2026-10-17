@@ -13,6 +13,87 @@ import (
 	"vaijunto/internal/dominio"
 )
 
+func TestPubclicarCaronaInicializaTodosTrechos(t *testing.T) {
+	repo := NovoRepositorio()
+	rota := []dominio.Cidade{"A", "B", "C", "D"}
+	data := dataFutura()
+
+	carona, err := repo.PublicarCarona("motorista1", rota, 3, 10, data)
+
+	if err != nil {
+		t.Fatalf("erro inesperado ao publicar carona: %v", err)
+	}
+
+	id := carona.Id
+	assentos_por_trecho := repo.assentos[strconv.Itoa(id)]
+
+	qtd_trechos := len(assentos_por_trecho)
+	if qtd_trechos != 3 {
+		t.Fatalf("erro na quantidade de trechos criados: %d , quando deveria ser 3", qtd_trechos)
+	}
+
+	for i, assentos := range assentos_por_trecho {
+		if assentos != 3 {
+			t.Fatalf(
+				"trecho %d deveria ter 3 assentos, mas tem %d",
+				i, assentos,
+			)
+		}
+	}
+}
+
+func TestRepositorioPersisteERecarregaJSONRepo(t *testing.T) {
+	caminho := filepath.Join(t.TempDir(), "dados.json")
+	repo, err := NovoRepositorioComArquivo(caminho)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CadastrarUsuario("ana", "senha-de-teste", "p"); err != nil {
+		t.Fatal(err)
+	}
+	carona, err := repo.PublicarCarona("motorista", []dominio.Cidade{"A", "B", "C"}, 1, 20, dataFutura())
+	if err != nil {
+		t.Fatal(err)
+	}
+	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota(strconv.Itoa(carona.Id), carona.Rota)}
+	if _, err := repo.ConfirmarReserva("ana", itinerario); err != nil {
+		t.Fatal(err)
+	}
+
+	segundoRepo, err := NovoRepositorioComArquivo(caminho)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	autenticado, _, err := segundoRepo.AutenticarUsuario("ana", "senha-de-teste")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !autenticado {
+		t.Fatalf("Autenticação do usuário falhou")
+	}
+
+	reservas, err := segundoRepo.ConsultarReservas("ana")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reservas) == 0 {
+		t.Fatalf("Reserva não pode ser confirmada")
+	}
+
+	assentos_por_trecho := segundoRepo.assentos[strconv.Itoa(carona.Id)]
+	for i, assentos := range assentos_por_trecho {
+		if assentos != 0 {
+			t.Fatalf(
+				"trecho %d deveria ter 0 assentos disponíveis, mas tem %d",
+				i, assentos,
+			)
+		}
+	}
+
+}
+
 func TestPublicarCarona(t *testing.T) {
 	repo := NovoRepositorio()
 	rota := []dominio.Cidade{"A", "B", "C"}
@@ -103,6 +184,50 @@ func TestBuscarItinerarios(t *testing.T) {
 // dataFutura evita que o teste comece a falhar quando o calendario avanca.
 func dataFutura() time.Time {
 	return time.Now().Add(48 * time.Hour)
+}
+
+func TestDisputaPeloUltimoAssento(t *testing.T) {
+	// Criar carona com 1 assento disponível
+	repo := NovoRepositorio()
+	carona, err := repo.PublicarCarona("motorista", []dominio.Cidade{"A", "B"}, 1, 10, dataFutura())
+	if err != nil {
+		t.Fatal(err)
+	}
+	itinerario := dominio.Itinerario{Passos: dominio.TrechosDaRota("1", carona.Rota)}
+
+	// Iniciar 20 Go Routines
+	const tentativas = 20
+
+	var wg sync.WaitGroup // permite esperar até que todas as 20 goroutines terminem.
+	var mu sync.Mutex     // protege a variável confirmadas, que várias goroutines podem tentar incrementar simultaneamente.
+
+	confirmadas := 0
+
+	// Todas as go routines reservam o mesmo trecho com 1 assento disponível
+	for i := 0; i < tentativas; i++ {
+		wg.Add(1) // registra uma goroutine que precisa terminar.
+
+		go func(i int) {
+			defer wg.Done() // avisa que aquela goroutine terminou, inclusive se a função retornar antes do fim.
+			_, err := repo.ConfirmarReserva("passageiro-"+strconv.Itoa(i), itinerario)
+
+			if err == nil {
+				mu.Lock()
+				confirmadas++
+				mu.Unlock()
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Deve haver apenas 1 reserva confirmada ao fim do processo
+	if confirmadas != 1 {
+		t.Fatalf(
+			"esperava 1 reserva confirmada, mas houve %d",
+			confirmadas,
+		)
+	}
 }
 
 func TestReservaConcorrenteNaoVendeDuasVezes(t *testing.T) {
