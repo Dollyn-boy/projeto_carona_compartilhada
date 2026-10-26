@@ -1,8 +1,11 @@
 package casosdeuso
 
 import (
+	"context"
 	"encoding/json"
+	"time"
 
+	"vaijunto/internal/consorcio"
 	"vaijunto/internal/dominio"
 	"vaijunto/internal/estado"
 	"vaijunto/internal/protocolo"
@@ -74,24 +77,70 @@ func reservaParaResposta(r dominio.Reserva) protocolo.ReservaResposta {
 // NOTA (gap conhecido): dados.Data e dados.NumPassageiros ainda nao sao
 // usados aqui, porque repo.BuscarItinerarios nao filtra por data (ver
 // carona.go). Se adicionar isso depois, e aqui que o filtro entra.
-func tratarBuscarItinerarios(repo *estado.Repositorio, req protocolo.Requisicao) protocolo.Resposta {
+
+func tratarBuscarItinerarios(
+	repo *estado.Repositorio,
+	req protocolo.Requisicao,
+	busca *consorcio.BuscaDistribuida,
+) protocolo.Resposta {
 	var dados protocolo.BuscarItinerariosDados
 
-	// 2. Valida os dados da requisição
 	if err := json.Unmarshal(req.Dados, &dados); err != nil {
 		return erro(req, "dados invalidos: "+err.Error())
 	}
 
-	// 3. Converte origem/destino de string para dominio.Cidade e chama repo.BuscarItinerarios
-	itinerarios, err := repo.BuscarItinerarios(dominio.Cidade(dados.Origem), dominio.Cidade(dados.Destino))
+	// Sem serviço distribuído configurado, consulta somente a empresa local.
+	if busca == nil {
+		itinerarios, err := repo.BuscarItinerarios(
+			dominio.Cidade(dados.Origem),
+			dominio.Cidade(dados.Destino),
+		)
+		if err != nil {
+			return erro(req, err.Error())
+		}
+
+		var resposta protocolo.BuscarItinerariosResposta
+		for _, it := range itinerarios {
+			resposta.Itinerarios = append(
+				resposta.Itinerarios,
+				itinerarioParaDados(it),
+			)
+		}
+
+		return ok(req, resposta)
+	}
+
+	// A busca distribuída precisa dos parâmetros de viagem.
+	data, err := time.Parse("2006-01-02", dados.Data)
+	if err != nil {
+		return erro(req, "data invalida: use o formato AAAA-MM-DD")
+	}
+
+	if dados.NumPassageiros <= 0 {
+		return erro(req, "a quantidade de passageiros deve ser positiva")
+	}
+
+	resultado, err := busca.Buscar(
+		context.Background(),
+		dominio.Cidade(dados.Origem),
+		dominio.Cidade(dados.Destino),
+		data,
+		dados.NumPassageiros,
+	)
 	if err != nil {
 		return erro(req, err.Error())
 	}
 
 	var resposta protocolo.BuscarItinerariosResposta
-	for _, it := range itinerarios {
-		resposta.Itinerarios = append(resposta.Itinerarios, itinerarioParaDados(it))
+	for _, it := range resultado.Itinerarios {
+		resposta.Itinerarios = append(
+			resposta.Itinerarios,
+			itinerarioParaDados(it),
+		)
 	}
+
+	resposta.BuscaCompleta = resultado.BuscaCompleta
+	resposta.EmpresasIndisponiveis = resultado.EmpresasIndisponiveis
 
 	return ok(req, resposta)
 }

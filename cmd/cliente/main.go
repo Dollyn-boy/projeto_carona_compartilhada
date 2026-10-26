@@ -300,8 +300,18 @@ func buscarItinerarios(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	origem := lerLinha(leitor, "Origem: ")
 	destino := lerLinha(leitor, "Destino: ")
 	data := lerLinha(leitor, "Data (AAAA-MM-DD): ")
+	passageiros := lerInt(leitor, "Numero de passageiros: ")
 
-	dados, _ := json.Marshal(protocolo.BuscarItinerariosDados{Origem: origem, Destino: destino, Data: data})
+	dados, err := json.Marshal(protocolo.BuscarItinerariosDados{
+		Origem:         origem,
+		Destino:        destino,
+		Data:           data,
+		NumPassageiros: passageiros,
+	})
+	if err != nil {
+		fmt.Println("erro ao preparar busca:", err)
+		return
+	}
 
 	resp, err := conexao.Enviar(protocolo.Requisicao{Tipo: "buscar_itinerarios", IDRequisicao: novoIDRequisicao(), Dados: dados})
 	if err != nil {
@@ -328,9 +338,16 @@ func buscarItinerarios(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	for i, it := range resultado.Itinerarios {
 		var partes []string
 		for _, t := range it.Trechos {
-			partes = append(partes, fmt.Sprintf("%s->%s (carona %s)", t.Origem, t.Destino, t.IDCarona))
+			partes = append(partes, fmt.Sprintf("%s->%s (empres %s, carona %s)", t.Origem, t.Destino, t.EmpresaID, t.IDCarona))
 		}
 		fmt.Printf("  [%d] %s\n", i, strings.Join(partes, "  |  "))
+	}
+
+	if !resultado.BuscaCompleta {
+		fmt.Printf(
+			"Aviso: busca parcial. Empresas indisponiveis: %v\n",
+			resultado.EmpresasIndisponiveis,
+		)
 	}
 }
 

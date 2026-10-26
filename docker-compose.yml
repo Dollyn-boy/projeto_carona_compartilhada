@@ -9,7 +9,9 @@ services:
     environment:
       VAIJUNTO_EMPRESA_ID: empresa-a
       VAIJUNTO_ENDERECO: ":8080"
-      VAIJUNTO_ARQUIVO_DADOS: /dados/dados.json
+      VAIJUNTO_REST_ENDERECO: ":8085"
+      VAIJUNTO_ARQUIVO_DADOS: /dados/empresa-a.json
+      VAIJUNTO_PEERS: "empresa-b=http://servidor-b:8085,empresa-c=http://servidor-c:8085"
     volumes:
       - vaijunto-a-dados:/dados
 
@@ -22,7 +24,9 @@ services:
     environment:
       VAIJUNTO_EMPRESA_ID: empresa-b
       VAIJUNTO_ENDERECO: ":8080"
-      VAIJUNTO_ARQUIVO_DADOS: /dados/dados.json
+      VAIJUNTO_REST_ENDERECO: ":8085"
+      VAIJUNTO_ARQUIVO_DADOS: /dados/empresa-b.json
+      VAIJUNTO_PEERS: "empresa-a=http://servidor-a:8085,empresa-c=http://servidor-c:8085"
     volumes:
       - vaijunto-b-dados:/dados
 
@@ -35,7 +39,9 @@ services:
     environment:
       VAIJUNTO_EMPRESA_ID: empresa-c
       VAIJUNTO_ENDERECO: ":8080"
-      VAIJUNTO_ARQUIVO_DADOS: /dados/dados.json
+      VAIJUNTO_REST_ENDERECO: ":8085"
+      VAIJUNTO_ARQUIVO_DADOS: /dados/empresa-c.json
+      VAIJUNTO_PEERS: "empresa-a=http://servidor-a:8085,empresa-b=http://servidor-b:8085"
     volumes:
       - vaijunto-c-dados:/dados
 

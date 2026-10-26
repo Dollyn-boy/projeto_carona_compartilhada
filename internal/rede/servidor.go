@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"vaijunto/internal/casosdeuso"
+	"vaijunto/internal/consorcio"
 	"vaijunto/internal/estado"
 	"vaijunto/internal/protocolo"
 )
@@ -139,55 +140,102 @@ func (c *conexaoCliente) responder(resposta protocolo.Resposta) error {
 //
 // Este metodo e um atalho para nao precisar configurar os numeros em todos os
 // lugares que iniciam o servidor.
+
 func Iniciar(endereco string, repo *estado.Repositorio) error {
-	return IniciarComWorkers(endereco, repo, workersPadrao, filaPadrao)
+	return IniciarComWorkers(
+		endereco,
+		repo,
+		workersPadrao,
+		filaPadrao,
+	)
 }
 
-// IniciarComWorkers inicia o servidor TCP com tamanho do pool configuravel.
-// Ela e util em testes para experimentar, por exemplo, 2 workers e fila de 5.
-func IniciarComWorkers(endereco string, repo *estado.Repositorio, numeroWorkers, capacidadeFila int) error {
-	// Recusa configuracoes que fariam o pool nao ter trabalhadores ou buffer.
+// IniciarComBusca inicia o servidor TCP com suporte à busca
+// distribuída entre empresas. O serviço pode ser nil, caso em
+// que as buscas continuam sendo exclusivamente locais.
+func IniciarComBusca(
+	endereco string,
+	repo *estado.Repositorio,
+	busca *consorcio.BuscaDistribuida,
+) error {
+	return iniciarComWorkersEBusca(
+		endereco,
+		repo,
+		workersPadrao,
+		filaPadrao,
+		busca,
+	)
+}
+
+// IniciarComWorkers mantém a inicialização com quantidade
+// configurável de workers, sem serviço de busca distribuída.
+func IniciarComWorkers(
+	endereco string,
+	repo *estado.Repositorio,
+	numeroWorkers int,
+	capacidadeFila int,
+) error {
+	return iniciarComWorkersEBusca(
+		endereco,
+		repo,
+		numeroWorkers,
+		capacidadeFila,
+		nil,
+	)
+}
+
+// iniciarComWorkersEBusca contém a implementação compartilhada
+// pelas diferentes formas de inicializar o servidor.
+func iniciarComWorkersEBusca(
+	endereco string,
+	repo *estado.Repositorio,
+	numeroWorkers int,
+	capacidadeFila int,
+	busca *consorcio.BuscaDistribuida,
+) error {
 	if numeroWorkers < 1 {
 		return fmt.Errorf("numero de workers precisa ser maior que zero")
 	}
+
 	if capacidadeFila < 1 {
 		return fmt.Errorf("capacidade da fila precisa ser maior que zero")
 	}
 
-	// net.Listen abre a porta TCP e espera conexoes de clientes nela.
 	listener, err := net.Listen("tcp", endereco)
 	if err != nil {
 		return fmt.Errorf("falha ao escutar em %s: %w", endereco, err)
 	}
-	defer listener.Close() // Fecha a porta quando esta funcao retornar.
+	defer listener.Close()
 
-	// Cria um unico pool compartilhado por todas as conexoes aceitas.
 	pool := novoWorkerPool(numeroWorkers, capacidadeFila)
-	defer pool.fechar() // So e seguro se a funcao retornar sem produtores ativos.
+	defer pool.fechar()
 
-	log.Printf("servidor escutando em %s (workers=%d, fila=%d)", endereco, numeroWorkers, capacidadeFila)
+	log.Printf(
+		"servidor escutando em %s (workers=%d, fila=%d)",
+		endereco,
+		numeroWorkers,
+		capacidadeFila,
+	)
 
 	for {
-		// Accept bloqueia ate um cliente estabelecer uma conexao TCP.
 		conn, err := listener.Accept()
 		if err != nil {
-			// A implementacao registra o erro e tenta aceitar outra conexao.
-			// Como o loop e infinito, ainda nao ha um mecanismo de encerramento
-			// gracioso do servidor nesta versao.
 			log.Printf("falha ao aceitar conexao: %v", err)
 			continue
 		}
 
-		// Uma goroutine por conexao continua existindo. Ela e responsavel por
-		// ler mensagens daquele cliente e enfileira-las, nao por executar as
-		// regras de negocio diretamente. O trabalho fica a cargo dos workers.
-		go tratarConexao(conn, repo, pool)
+		go tratarConexao(conn, repo, pool, busca)
 	}
 }
 
 // tratarConexao administra uma conexao TCP durante o tempo em que estiver aberta.
 // Enfileira cada requisicao recebida para o pool de workers e envia a resposta de volta ao cliente.
-func tratarConexao(conn net.Conn, repo *estado.Repositorio, pool *workerPool) {
+func tratarConexao(
+	conn net.Conn,
+	repo *estado.Repositorio,
+	pool *workerPool,
+	busca *consorcio.BuscaDistribuida,
+) {
 	defer conn.Close() // Ao sair deste metodo, encerra o socket do cliente.
 
 	// conexaoCliente empacota o socket e o mutex para proteger as escritas.
@@ -251,7 +299,22 @@ func tratarConexao(conn net.Conn, repo *estado.Repositorio, pool *workerPool) {
 
 			// O despachante escolhe o caso de uso a partir de req.Tipo. Ele pode
 			// chamar o repositorio para consultar ou modificar os dados.
-			resposta := casosdeuso.Despachar(repo, sessao, req)
+			var resposta protocolo.Resposta
+
+			if busca != nil {
+				resposta = casosdeuso.DespacharComBusca(
+					repo,
+					sessao,
+					req,
+					busca,
+				)
+			} else {
+				resposta = casosdeuso.Despachar(
+					repo,
+					sessao,
+					req,
+				)
+			}
 
 			// Depois de processar, o worker envia a resposta pela mesma conexao.
 			if err := cliente.responder(resposta); err != nil {

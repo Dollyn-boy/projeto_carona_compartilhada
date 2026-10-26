@@ -69,7 +69,7 @@ func TestRequisicaoTCPPassaPeloWorkerPool(t *testing.T) {
 	// terminaServidor é um canal que será fechado quando a função tratarConexao terminar. Isso permite que o teste saiba quando o servidor terminou de processar a conexão.
 	terminouServidor := make(chan struct{})
 	go func() {
-		tratarConexao(conexaoServidor, repo, pool)
+		tratarConexao(conexaoServidor, repo, pool, nil)
 		close(terminouServidor)
 	}()
 	defer func() {

@@ -80,7 +80,9 @@ type ItinerarioDados struct {
 }
 
 type BuscarItinerariosResposta struct {
-	Itinerarios []ItinerarioDados `json:"itinerarios"`
+	Itinerarios           []ItinerarioDados `json:"itinerarios"`
+	BuscaCompleta         bool              `json:"busca_completa"`
+	EmpresasIndisponiveis []string          `json:"empresas_indisponiveis,omitempty"`
 }
 
 type CaronaResposta struct {
