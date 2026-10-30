@@ -33,10 +33,11 @@ type Repositorio struct {
 
 	caminhoJSON string
 
-	caronas  map[string]*dominio.Carona
-	assentos map[string][]int // Guarda quantos assentos ainda estão livres em cada trecho de cada carona.
-	reservas map[string]*dominio.Reserva
-	usuarios map[string]*dominio.Usuario
+	caronas    map[string]*dominio.Carona
+	assentos   map[string][]int // Guarda quantos assentos ainda estão livres em cada trecho de cada carona.
+	reservas   map[string]*dominio.Reserva
+	usuarios   map[string]*dominio.Usuario
+	transacoes map[string]*TransacaoLocal
 
 	proximoIDCarona  int
 	proximoIDReserva int
@@ -105,6 +106,7 @@ func novoRepositorio(empresaID, caminho string) *Repositorio {
 		assentos:    make(map[string][]int),
 		reservas:    make(map[string]*dominio.Reserva),
 		usuarios:    make(map[string]*dominio.Usuario),
+		transacoes:  make(map[string]*TransacaoLocal),
 	}
 }
 
@@ -120,6 +122,7 @@ type estadoPersistido struct {
 	Assentos         map[string][]int  `json:"assentos_livres_por_trecho"`
 	Reservas         []dominio.Reserva `json:"reservas"`
 	Usuarios         []dominio.Usuario `json:"usuarios"`
+	Transacoes       []TransacaoLocal  `json:"transacoes,omitempty"`
 }
 
 // alterar executa uma modificacao protegida pelo mutex do repositorio.
@@ -264,6 +267,19 @@ func (r *Repositorio) CancelarCarona(idCarona int, motorista string) error {
 			}
 			if carona.Motorista != motorista {
 				return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a carona %d", idCarona)
+			}
+
+			// Uma carona não pode ser removida enquanto existir uma transação
+			// PREPARADA que dependa de algum dos seus trechos.
+			for _, transacao := range r.transacoes {
+				if transacao.Estado != EstadoPreparada {
+					continue
+				}
+				for _, trecho := range transacao.Itinerario.Passos {
+					if trecho.IDCarona == chave {
+						return fmt.Errorf("carona %d possui uma transacao preparada e nao pode ser cancelada", idCarona)
+					}
+				}
 			}
 
 			for chaveReserva, reserva := range r.reservas {
@@ -567,13 +583,14 @@ func clonarReserva(r dominio.Reserva) dominio.Reserva {
 func (r *Repositorio) estadoLocked() estadoPersistido {
 	e := estadoPersistido{
 		EmpresaID:        r.empresaID,
-		Versao:           1,
+		Versao:           2,
 		ProximoIDCarona:  r.proximoIDCarona,
 		ProximoIDReserva: r.proximoIDReserva,
 		Assentos:         make(map[string][]int, len(r.assentos)),
 		Caronas:          make([]dominio.Carona, 0, len(r.caronas)),
 		Reservas:         make([]dominio.Reserva, 0, len(r.reservas)),
 		Usuarios:         make([]dominio.Usuario, 0, len(r.usuarios)),
+		Transacoes:       make([]TransacaoLocal, 0, len(r.transacoes)),
 	}
 	for chave, carona := range r.caronas {
 		e.Caronas = append(e.Caronas, clonarCarona(*carona))
@@ -587,10 +604,14 @@ func (r *Repositorio) estadoLocked() estadoPersistido {
 	for _, usuario := range r.usuarios {
 		e.Usuarios = append(e.Usuarios, *usuario)
 	}
+	for _, transacao := range r.transacoes {
+		e.Transacoes = append(e.Transacoes, clonarTransacao(*transacao))
+	}
 
 	sort.Slice(e.Caronas, func(i, j int) bool { return e.Caronas[i].Id < e.Caronas[j].Id })
 	sort.Slice(e.Reservas, func(i, j int) bool { return e.Reservas[i].Id < e.Reservas[j].Id })
 	sort.Slice(e.Usuarios, func(i, j int) bool { return e.Usuarios[i].Usuario < e.Usuarios[j].Usuario })
+	sort.Slice(e.Transacoes, func(i, j int) bool { return e.Transacoes[i].ID < e.Transacoes[j].ID })
 	return e
 }
 
@@ -646,7 +667,7 @@ func (r *Repositorio) aplicarJSONLocked(conteudo []byte) error {
 	if err := json.Unmarshal(conteudo, &e); err != nil {
 		return err
 	}
-	if e.Versao != 1 {
+	if e.Versao != 1 && e.Versao != 2 {
 		return fmt.Errorf("versao do arquivo JSON nao suportada: %d", e.Versao)
 	}
 
@@ -710,10 +731,70 @@ func (r *Repositorio) aplicarJSONLocked(conteudo []byte) error {
 		usuarios[usuario.Usuario] = &copia
 	}
 
+	transacoes := make(map[string]*TransacaoLocal, len(e.Transacoes))
+	for _, transacao := range e.Transacoes {
+		if strings.TrimSpace(transacao.ID) == "" || transacao.ID != strings.TrimSpace(transacao.ID) {
+			return fmt.Errorf("id de transacao vazio ou invalido no arquivo")
+		}
+		if _, repetida := transacoes[transacao.ID]; repetida {
+			return fmt.Errorf("id de transacao duplicado no arquivo: %s", transacao.ID)
+		}
+		if transacao.Estado != EstadoPreparada && transacao.Estado != EstadoConfirmada && transacao.Estado != EstadoAbortada {
+			return fmt.Errorf("estado invalido na transacao %s: %q", transacao.ID, transacao.Estado)
+		}
+
+		temPassageiro := strings.TrimSpace(transacao.Passageiro) != ""
+		temItinerario := len(transacao.Itinerario.Passos) > 0
+		if transacao.Estado != EstadoAbortada && (!temPassageiro || !temItinerario) {
+			return fmt.Errorf("transacao %s precisa possuir passageiro e itinerario", transacao.ID)
+		}
+		if transacao.Estado == EstadoAbortada && temPassageiro != temItinerario {
+			return fmt.Errorf("transacao abortada %s possui dados incompletos", transacao.ID)
+		}
+		if temItinerario {
+			// PREPARADA ainda depende dos assentos/caronas existentes, pois
+			// poderá ser confirmada ou abortada após a reinicialização.
+			// Estados terminais preservam o histórico, mesmo que uma carona
+			// ou reserva seja cancelada posteriormente.
+			if transacao.Estado == EstadoPreparada {
+				if _, _, err := validarItinerarioLocal(r.empresaID, transacao.Itinerario, caronas); err != nil {
+					return fmt.Errorf("itinerario invalido na transacao %s: %w", transacao.ID, err)
+				}
+			} else if _, _, err := validarItinerarioBasico(r.empresaID, transacao.Itinerario); err != nil {
+				return fmt.Errorf("itinerario invalido na transacao %s: %w", transacao.ID, err)
+			}
+		}
+
+		switch transacao.Estado {
+		case EstadoPreparada:
+			if transacao.ReservaID != 0 {
+				return fmt.Errorf("transacao preparada %s nao pode possuir reserva_id", transacao.ID)
+			}
+		case EstadoConfirmada:
+			if transacao.ReservaID <= 0 {
+				return fmt.Errorf("transacao confirmada %s precisa possuir reserva_id", transacao.ID)
+			}
+			// Uma reserva pode ter sido cancelada depois da confirmação.
+			// Se ainda existir, verificamos a referência; se não existir,
+			// mantemos o registro histórico da transação confirmada.
+			if reserva, existe := reservas[strconv.Itoa(transacao.ReservaID)]; existe && !transacaoIgualReserva(transacao, *reserva) {
+				return fmt.Errorf("transacao confirmada %s nao corresponde a reserva persistida", transacao.ID)
+			}
+		case EstadoAbortada:
+			if transacao.ReservaID != 0 {
+				return fmt.Errorf("transacao abortada %s nao pode possuir reserva_id", transacao.ID)
+			}
+		}
+
+		copia := clonarTransacao(transacao)
+		transacoes[transacao.ID] = &copia
+	}
+
 	r.caronas = caronas
 	r.assentos = assentos
 	r.reservas = reservas
 	r.usuarios = usuarios
+	r.transacoes = transacoes
 	r.proximoIDCarona = e.ProximoIDCarona
 	r.proximoIDReserva = e.ProximoIDReserva
 	// Tolera um contador antigo menor que os IDs encontrados, evitando

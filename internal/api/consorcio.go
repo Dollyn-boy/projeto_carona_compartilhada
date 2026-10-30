@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -88,7 +89,11 @@ func (s *Servidor) trechos(w http.ResponseWriter, r *http.Request) {
 
 	trechos, err := s.repo.ListarTrechosDisponiveis(data, passageiros)
 	if err != nil {
-		escreverErro(w, http.StatusBadRequest, err.Error())
+		if errors.Is(err, estado.ErrParametroInvalido) {
+			escreverErro(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		escreverErro(w, http.StatusInternalServerError, "falha interna ao consultar trechos")
 		return
 	}
 

@@ -1,12 +1,16 @@
 package estado
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"vaijunto/internal/dominio"
 )
+
+// ErrParametroInvalido marca erros causados pela entrada (viram HTTP 400).
+var ErrParametroInvalido = errors.New("parametro invalido")
 
 // ListarTrechosDisponiveis devolve um snapshot dos trechos locais
 // que possuem assentos suficientes para a data e o grupo solicitados.
@@ -15,7 +19,7 @@ func (r *Repositorio) ListarTrechosDisponiveis(
 	passageiros int,
 ) ([]dominio.ArestaDisponivel, error) {
 	if passageiros < 1 {
-		return nil, fmt.Errorf("numero de passageiros deve ser maior que zero")
+		return nil, fmt.Errorf("%w: numero de passageiros deve ser maior que zero", ErrParametroInvalido)
 	}
 
 	layoutData := "2006-01-02"
@@ -23,7 +27,7 @@ func (r *Repositorio) ListarTrechosDisponiveis(
 	hoje := time.Now().In(time.Local).Format(layoutData)
 
 	if diaSolicitado < hoje {
-		return nil, fmt.Errorf("a data solicitada nao pode estar no passado")
+		return nil, fmt.Errorf("%w: a data solicitada nao pode estar no passado", ErrParametroInvalido)
 	}
 
 	r.mu.RLock()
@@ -33,7 +37,7 @@ func (r *Repositorio) ListarTrechosDisponiveis(
 
 	for chave, carona := range r.caronas {
 		// Todas as arestas oferecidas devem corresponder ao dia pedido.
-		if carona.Data.In(time.Local).Format(layoutData) != diaSolicitado {
+		if carona.Data.Format(layoutData) != diaSolicitado {
 			continue
 		}
 
