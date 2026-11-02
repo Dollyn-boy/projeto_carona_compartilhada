@@ -12,6 +12,7 @@ package rede
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -142,61 +143,68 @@ func (c *conexaoCliente) responder(resposta protocolo.Resposta) error {
 // lugares que iniciam o servidor.
 
 func Iniciar(endereco string, repo *estado.Repositorio) error {
-	return IniciarComWorkers(
-		endereco,
-		repo,
-		workersPadrao,
-		filaPadrao,
-	)
+	return IniciarComWorkers(endereco, repo, workersPadrao, filaPadrao)
 }
 
-// IniciarComBusca inicia o servidor TCP com suporte à busca
-// distribuída entre empresas. O serviço pode ser nil, caso em
-// que as buscas continuam sendo exclusivamente locais.
+// IniciarComBusca inicia o servidor TCP com suporte à busca distribuída.
+// Use IniciarComBuscaContext quando o chamador precisar encerrar o listener
+// de forma controlada.
 func IniciarComBusca(
 	endereco string,
 	repo *estado.Repositorio,
 	busca *consorcio.BuscaDistribuida,
 ) error {
-	return iniciarComWorkersEBusca(
-		endereco,
-		repo,
-		workersPadrao,
-		filaPadrao,
-		busca,
-	)
+	return IniciarComBuscaContext(context.Background(), endereco, repo, busca)
 }
 
-// IniciarComWorkers mantém a inicialização com quantidade
-// configurável de workers, sem serviço de busca distribuída.
+// IniciarComBuscaContext é a versão cancelável de IniciarComBusca.
+func IniciarComBuscaContext(
+	ctx context.Context,
+	endereco string,
+	repo *estado.Repositorio,
+	busca *consorcio.BuscaDistribuida,
+) error {
+	return iniciarComWorkersEBusca(ctx, endereco, repo, workersPadrao, filaPadrao, busca)
+}
+
+// IniciarComWorkers mantém a inicialização com quantidade configurável de workers.
 func IniciarComWorkers(
 	endereco string,
 	repo *estado.Repositorio,
 	numeroWorkers int,
 	capacidadeFila int,
 ) error {
-	return iniciarComWorkersEBusca(
-		endereco,
-		repo,
-		numeroWorkers,
-		capacidadeFila,
-		nil,
-	)
+	return IniciarComWorkersContext(context.Background(), endereco, repo, numeroWorkers, capacidadeFila)
 }
 
-// iniciarComWorkersEBusca contém a implementação compartilhada
-// pelas diferentes formas de inicializar o servidor.
+// IniciarComWorkersContext permite encerrar o servidor e drenar a fila de trabalho.
+func IniciarComWorkersContext(
+	ctx context.Context,
+	endereco string,
+	repo *estado.Repositorio,
+	numeroWorkers int,
+	capacidadeFila int,
+) error {
+	return iniciarComWorkersEBusca(ctx, endereco, repo, numeroWorkers, capacidadeFila, nil)
+}
+
+// iniciarComWorkersEBusca contém a implementação compartilhada pelas formas
+// de inicializar o servidor. No encerramento, para de aceitar conexões, fecha
+// sockets ativos, aguarda seus produtores e só então fecha a fila dos workers.
 func iniciarComWorkersEBusca(
+	ctx context.Context,
 	endereco string,
 	repo *estado.Repositorio,
 	numeroWorkers int,
 	capacidadeFila int,
 	busca *consorcio.BuscaDistribuida,
 ) error {
+	if ctx == nil {
+		return fmt.Errorf("contexto nao pode ser nil")
+	}
 	if numeroWorkers < 1 {
 		return fmt.Errorf("numero de workers precisa ser maior que zero")
 	}
-
 	if capacidadeFila < 1 {
 		return fmt.Errorf("capacidade da fila precisa ser maior que zero")
 	}
@@ -205,27 +213,70 @@ func iniciarComWorkersEBusca(
 	if err != nil {
 		return fmt.Errorf("falha ao escutar em %s: %w", endereco, err)
 	}
-	defer listener.Close()
 
 	pool := novoWorkerPool(numeroWorkers, capacidadeFila)
-	defer pool.fechar()
+	conexoes := make(map[net.Conn]struct{})
+	var conexoesMu sync.Mutex
+	var conexoesWG sync.WaitGroup
+	aceitacaoEncerrada := make(chan struct{})
 
-	log.Printf(
-		"servidor escutando em %s (workers=%d, fila=%d)",
-		endereco,
-		numeroWorkers,
-		capacidadeFila,
-	)
+	// O cancelamento precisa desbloquear Accept e as leituras das conexões.
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = listener.Close()
+			conexoesMu.Lock()
+			for conn := range conexoes {
+				_ = conn.Close()
+			}
+			conexoesMu.Unlock()
+		case <-aceitacaoEncerrada:
+		}
+	}()
+
+	log.Printf("servidor escutando em %s (workers=%d, fila=%d)", endereco, numeroWorkers, capacidadeFila)
 
 	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("falha ao aceitar conexao: %v", err)
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			if ctx.Err() != nil || errors.Is(acceptErr, net.ErrClosed) {
+				break
+			}
+			log.Printf("falha ao aceitar conexao: %v", acceptErr)
 			continue
 		}
+		if ctx.Err() != nil {
+			_ = conn.Close()
+			break
+		}
 
-		go tratarConexao(conn, repo, pool, busca)
+		conexoesMu.Lock()
+		conexoes[conn] = struct{}{}
+		conexoesWG.Add(1)
+		conexoesMu.Unlock()
+
+		go func(conn net.Conn) {
+			defer conexoesWG.Done()
+			defer func() {
+				conexoesMu.Lock()
+				delete(conexoes, conn)
+				conexoesMu.Unlock()
+			}()
+			tratarConexao(conn, repo, pool, busca)
+		}(conn)
 	}
+
+	close(aceitacaoEncerrada)
+	_ = listener.Close()
+	conexoesMu.Lock()
+	for conn := range conexoes {
+		_ = conn.Close()
+	}
+	conexoesMu.Unlock()
+	conexoesWG.Wait()
+	pool.fechar()
+
+	return nil
 }
 
 // tratarConexao administra uma conexao TCP durante o tempo em que estiver aberta.

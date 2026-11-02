@@ -1,17 +1,18 @@
-
 //  1. Cadastra um motorista de teste e publica UMA carona com
 //     capacidade conhecida (N assentos).
+//
 //  2. Dispara M passageiros CONCORRENTES (goroutines, cada um com sua
 //     PROPRIA conexao TCP), todos tentando confirmar reserva no MESMO
 //     trecho dessa carona ao mesmo tempo.
+//
 //  3. Verifica a invariante central do projeto: o numero de
 //     confirmacoes bem-sucedidas tem que ser EXATAMENTE igual a
 //     capacidade — nem a mais (venda dupla) nem a menos (assento
 //     perdido por erro de concorrencia).
-//  4. Mede o tempo de resposta (mediana e p99) sob essa disputa.
 //
+// 4. Mede o tempo de resposta (mediana e p99) sob essa disputa.
 //
-//	go run ./test/carga -servidor localhost:8080 -clientes 30 -capacidade 5
+//	go run ./test/carga -servidor localhost:8080 -empresa empresa-a -clientes 30 -capacidade 5
 package main
 
 import (
@@ -19,7 +20,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,11 +31,19 @@ import (
 )
 
 func main() {
-	endereco := flag.String("servidor", "localhost:8080", "endereco do servidor (host:porta)")
+	endereco := flag.String("servidor", "localhost:8080", "endereco TCP do servidor (host:porta)")
+	empresaIDPadrao := "vaijunto-local"
+	if valor := strings.TrimSpace(os.Getenv("VAIJUNTO_EMPRESA_ID")); valor != "" {
+		empresaIDPadrao = valor
+	}
+	empresaID := flag.String("empresa", empresaIDPadrao, "empresa proprietaria da carona de teste")
 	nClientes := flag.Int("clientes", 30, "numero de passageiros concorrentes disputando o mesmo trecho")
 	capacidade := flag.Int("capacidade", 5, "capacidade de assentos da carona de teste")
 	flag.Parse()
 
+	if strings.TrimSpace(*empresaID) == "" {
+		log.Fatal("informe -empresa ou VAIJUNTO_EMPRESA_ID para identificar o proprietario do trecho")
+	}
 	idCarona := publicarCaronaDeTeste(*endereco, *capacidade)
 	fmt.Printf("Carona de teste publicada: id=%d capacidade=%d\n", idCarona, *capacidade)
 	fmt.Printf("Disparando %d passageiros concorrentes contra o mesmo trecho...\n\n", *nClientes)
@@ -45,7 +56,7 @@ func main() {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			resultados[idx] = tentarReservar(*endereco, idx, idCarona)
+			resultados[idx] = tentarReservar(*endereco, *empresaID, idx, idCarona)
 		}(i)
 	}
 	wg.Wait()
@@ -102,7 +113,7 @@ func publicarCaronaDeTeste(endereco string, capacidade int) int {
 // maquinas diferentes), cadastra-se, e tenta confirmar reserva no
 // trecho unico da carona de teste (sempre indice 0, ja que a rota so
 // tem 2 cidades).
-func tentarReservar(endereco string, idx int, idCarona int) resultado {
+func tentarReservar(endereco, empresaID string, idx int, idCarona int) resultado {
 	inicio := time.Now()
 
 	conexao, err := clientenet.Conectar(endereco)
@@ -113,7 +124,8 @@ func tentarReservar(endereco string, idx int, idCarona int) resultado {
 
 	usuario := fmt.Sprintf("passageiro-carga-%d-%d", idx, time.Now().UnixNano())
 	cadastroDados, _ := json.Marshal(protocolo.CadastroDados{Usuario: usuario, Senha: "senha123", Role: "p"})
-	resp, err := conexao.Enviar(protocolo.Requisicao{Tipo: "cadastro", IDRequisicao: "1", Dados: cadastroDados})
+	prefixoID := fmt.Sprintf("carga-%d-%d", time.Now().UnixNano(), idx)
+	resp, err := conexao.Enviar(protocolo.Requisicao{Tipo: "cadastro", IDRequisicao: prefixoID + "-cadastro", Dados: cadastroDados})
 	if err != nil {
 		return resultado{sucesso: false, duracao: time.Since(inicio), motivo: "erro de rede no cadastro: " + err.Error()}
 	}
@@ -122,20 +134,41 @@ func tentarReservar(endereco string, idx int, idCarona int) resultado {
 	}
 
 	trecho := protocolo.TrechoDados{
-		IDCarona: fmt.Sprintf("%d", idCarona),
-		Indice:   0,
-		Origem:   "CidadeA-Carga",
-		Destino:  "CidadeB-Carga",
+		EmpresaID: empresaID,
+		IDCarona:  fmt.Sprintf("%d", idCarona),
+		Indice:    0,
+		Origem:    "CidadeA-Carga",
+		Destino:   "CidadeB-Carga",
 	}
 	confirmarDados, _ := json.Marshal(protocolo.ConfirmarReservaDados{Trechos: []protocolo.TrechoDados{trecho}})
 
-	resp, err = conexao.Enviar(protocolo.Requisicao{Tipo: "confirmar_reserva", IDRequisicao: "2", Dados: confirmarDados})
+	resp, err = conexao.Enviar(protocolo.Requisicao{Tipo: "confirmar_reserva", IDRequisicao: prefixoID + "-reserva", Dados: confirmarDados})
 	duracao := time.Since(inicio)
 	if err != nil {
 		return resultado{sucesso: false, duracao: duracao, motivo: "erro de rede na confirmacao: " + err.Error()}
 	}
 	if resp.Status != "ok" {
 		return resultado{sucesso: false, duracao: duracao, motivo: resp.Motivo}
+	}
+
+	// Status TCP "ok" significa que o dispatcher respondeu; nao significa
+	// necessariamente que a coordenacao entre empresas foi concluida.
+	var distribuida protocolo.CoordenarReservaResposta
+	if err := json.Unmarshal(resp.Dados, &distribuida); err == nil && distribuida.TransacaoID != "" {
+		if distribuida.Estado != "CONFIRMADA" {
+			return resultado{
+				sucesso: false,
+				duracao: duracao,
+				motivo:  fmt.Sprintf("transacao %s terminou em %s", distribuida.TransacaoID, distribuida.Estado),
+			}
+		}
+		return resultado{sucesso: true, duracao: duracao}
+	}
+
+	// Compatibilidade com uma resposta de reserva estritamente local.
+	var local protocolo.ReservaResposta
+	if err := json.Unmarshal(resp.Dados, &local); err != nil || local.ID <= 0 {
+		return resultado{sucesso: false, duracao: duracao, motivo: "resposta de reserva invalida"}
 	}
 	return resultado{sucesso: true, duracao: duracao}
 }

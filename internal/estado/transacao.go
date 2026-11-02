@@ -35,6 +35,7 @@ type TransacaoLocal struct {
 	Itinerario   dominio.Itinerario `json:"itinerario,omitempty"`
 	Estado       EstadoTransacao    `json:"estado"`
 	ReservaID    int                `json:"reserva_id,omitempty"`
+	Coordenada   bool               `json:"coordenada,omitempty"`
 	CriadaEm     time.Time          `json:"criada_em"`
 	AtualizadaEm time.Time          `json:"atualizada_em"`
 }
@@ -117,6 +118,29 @@ func (r *Repositorio) PrepararTransacao(
 		return TransacaoLocal{}, err
 	}
 	return resultado, nil
+}
+
+// MarcarTransacaoCoordenada identifica que esta participacao integra uma
+// reserva coordenada por uma empresa. O cancelamento local simples deve
+// bloquear essa reserva para impedir que apenas uma parte do itinerario seja
+// removida. A operacao e idempotente.
+func (r *Repositorio) MarcarTransacaoCoordenada(idTransacao string) error {
+	idTransacao = strings.TrimSpace(idTransacao)
+	if idTransacao == "" {
+		return fmt.Errorf("id da transacao nao pode ser vazio")
+	}
+	return r.alterar(func() error {
+		transacao, existe := r.transacoes[idTransacao]
+		if !existe {
+			return fmt.Errorf("%w: %s", ErrTransacaoNaoEncontrada, idTransacao)
+		}
+		if transacao.Estado == EstadoAbortada {
+			return fmt.Errorf("%w: transacao %s ja foi abortada", ErrEstadoTransacao, idTransacao)
+		}
+		transacao.Coordenada = true
+		transacao.AtualizadaEm = time.Now().UTC()
+		return nil
+	})
 }
 
 // ConfirmarTransacao transforma uma preparação em uma Reserva definitiva.
@@ -320,9 +344,9 @@ func validarItinerarioBasico(
 		chaves[i] = chave
 		idsCarona[i] = idCarona
 
-		if i > 0 && itinerario.Passos[i-1].Destino != trecho.Origem {
-			return nil, nil, fmt.Errorf("itinerario possui trechos desconectados entre %q e %q", itinerario.Passos[i-1].Destino, trecho.Origem)
-		}
+		// A validação de continuidade do itinerário completo é feita pela
+		// coordenadora. Aqui os trechos podem ser uma partição local não
+		// contígua de uma rota que atravessa várias empresas.
 	}
 
 	return chaves, idsCarona, nil

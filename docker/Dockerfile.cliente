@@ -5,5 +5,7 @@ RUN CGO_ENABLED=0 go build -o /cliente ./cmd/cliente
 
 FROM alpine:latest
 COPY --from=build /cliente /cliente
+RUN mkdir -p /dados && chmod 700 /dados
+ENV VAIJUNTO_CLIENTE_ESTADO=/dados/cliente_estado.json
 
 ENTRYPOINT ["/cliente"]

@@ -52,6 +52,10 @@ services:
     depends_on:
       - servidor-a
     command: ["-servidor", "servidor-a:8080"]
+    environment:
+      VAIJUNTO_CLIENTE_ESTADO: /dados/cliente_estado.json
+    volumes:
+      - vaijunto-cliente-dados:/dados
     stdin_open: true
     tty: true
 
@@ -59,3 +63,4 @@ volumes:
   vaijunto-a-dados:
   vaijunto-b-dados:
   vaijunto-c-dados:
+  vaijunto-cliente-dados:

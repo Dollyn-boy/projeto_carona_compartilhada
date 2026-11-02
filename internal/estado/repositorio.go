@@ -33,19 +33,24 @@ type Repositorio struct {
 
 	caminhoJSON string
 
-	caronas    map[string]*dominio.Carona
-	assentos   map[string][]int // Guarda quantos assentos ainda estão livres em cada trecho de cada carona.
-	reservas   map[string]*dominio.Reserva
-	usuarios   map[string]*dominio.Usuario
-	transacoes map[string]*TransacaoLocal
+	caronas               map[string]*dominio.Carona
+	assentos              map[string][]int // Guarda quantos assentos ainda estão livres em cada trecho de cada carona.
+	reservas              map[string]*dominio.Reserva
+	usuarios              map[string]*dominio.Usuario
+	transacoes            map[string]*TransacaoLocal
+	transacoesCoordenadas map[string]*TransacaoCoordenada
 
-	proximoIDCarona  int
-	proximoIDReserva int
+	proximoIDCarona    int
+	proximoIDReserva   int
+	proximoIDTransacao int
 }
 
 func NovoRepositorio() *Repositorio {
 	return novoRepositorio("local", "")
 }
+
+// EmpresaID informa a identidade persistida neste repositório.
+func (r *Repositorio) EmpresaID() string { return r.empresaID }
 
 // Mantem compatibilidade com o codigo existente e com os testes.
 // O identificador "local" e usado quando nenhuma empresa e especificada.
@@ -99,14 +104,15 @@ func NovoRepositorioDeEmpresaComArquivo(
 
 func novoRepositorio(empresaID, caminho string) *Repositorio {
 	return &Repositorio{
-		empresaID:   empresaID,
-		trava:       concorrencia.NovaTrava(),
-		caminhoJSON: caminho,
-		caronas:     make(map[string]*dominio.Carona),
-		assentos:    make(map[string][]int),
-		reservas:    make(map[string]*dominio.Reserva),
-		usuarios:    make(map[string]*dominio.Usuario),
-		transacoes:  make(map[string]*TransacaoLocal),
+		empresaID:             empresaID,
+		trava:                 concorrencia.NovaTrava(),
+		caminhoJSON:           caminho,
+		caronas:               make(map[string]*dominio.Carona),
+		assentos:              make(map[string][]int),
+		reservas:              make(map[string]*dominio.Reserva),
+		usuarios:              make(map[string]*dominio.Usuario),
+		transacoes:            make(map[string]*TransacaoLocal),
+		transacoesCoordenadas: make(map[string]*TransacaoCoordenada),
 	}
 }
 
@@ -114,15 +120,17 @@ func novoRepositorio(empresaID, caminho string) *Repositorio {
 // inteiro torna a persistencia facil de entender: cada salvamento descreve
 // todo o estado atual, em vez de manter uma sequencia de eventos para repetir.
 type estadoPersistido struct {
-	EmpresaID        string            `json:"empresa_id"`
-	Versao           int               `json:"versao"`
-	ProximoIDCarona  int               `json:"proximo_id_carona"`
-	ProximoIDReserva int               `json:"proximo_id_reserva"`
-	Caronas          []dominio.Carona  `json:"caronas"`
-	Assentos         map[string][]int  `json:"assentos_livres_por_trecho"`
-	Reservas         []dominio.Reserva `json:"reservas"`
-	Usuarios         []dominio.Usuario `json:"usuarios"`
-	Transacoes       []TransacaoLocal  `json:"transacoes,omitempty"`
+	EmpresaID             string                `json:"empresa_id"`
+	Versao                int                   `json:"versao"`
+	ProximoIDCarona       int                   `json:"proximo_id_carona"`
+	ProximoIDReserva      int                   `json:"proximo_id_reserva"`
+	ProximoIDTransacao    int                   `json:"proximo_id_transacao,omitempty"`
+	Caronas               []dominio.Carona      `json:"caronas"`
+	Assentos              map[string][]int      `json:"assentos_livres_por_trecho"`
+	Reservas              []dominio.Reserva     `json:"reservas"`
+	Usuarios              []dominio.Usuario     `json:"usuarios"`
+	Transacoes            []TransacaoLocal      `json:"transacoes,omitempty"`
+	TransacoesCoordenadas []TransacaoCoordenada `json:"transacoes_coordenadas,omitempty"`
 }
 
 // alterar executa uma modificacao protegida pelo mutex do repositorio.
@@ -139,20 +147,23 @@ func (r *Repositorio) alterar(fn func() error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Serializar o estado anterior para bytes JSON
-	var backup []byte
-	if r.caminhoJSON != "" {
-		var err error
-		// Salvar o estado do repositório antes de qualquer modificação.
-		backup, err = r.serializarLocked()
-		if err != nil {
-			return fmt.Errorf("preparar estado anterior: %w", err)
-		}
+	// Serializa o estado anterior para permitir rollback em memoria mesmo
+	// quando o repositorio nao possui arquivo JSON configurado.
+	backup, err := r.serializarLocked()
+	if err != nil {
+		return fmt.Errorf("preparar estado anterior: %w", err)
 	}
 
-	// Executa a funcao de alteracao. Se der erro, devolve o erro sem alterar nada.
-	// Não se deve incluir chamadas para outros métodos em fn() para evitar deadlocks
+	// Executa a funcao de alteracao. Mesmo que uma funcao retorne erro depois
+	// de modificar algum mapa, restaura o snapshot anterior. Isso protege o
+	// estado em memoria tanto nos repositorios persistentes quanto nos testes
+	// que usam apenas memoria.
+	// Nao inclua chamadas a outros metodos do repositorio dentro de fn(), pois
+	// eles tentariam adquirir o mesmo mutex e poderiam causar deadlock.
 	if err := fn(); err != nil {
+		if erroRestaurar := r.aplicarJSONLocked(backup); erroRestaurar != nil {
+			return fmt.Errorf("operacao falhou (%v) e rollback em memoria falhou: %w", err, erroRestaurar)
+		}
 		return err
 	}
 
@@ -495,6 +506,12 @@ func (r *Repositorio) CancelarReserva(idReserva int, passageiro string) error {
 		r.mu.RUnlock()
 		return fmt.Errorf("acesso negado: voce nao tem permissao para cancelar a reserva %d", idReserva)
 	}
+	for _, transacao := range r.transacoes {
+		if transacao.Coordenada && transacao.Estado == EstadoConfirmada && transacao.ReservaID == idReserva {
+			r.mu.RUnlock()
+			return fmt.Errorf("reserva %d pertence a uma transacao distribuida %s; cancelamento parcial foi bloqueado", idReserva, transacao.ID)
+		}
+	}
 	itens := append([]dominio.ItemReserva(nil), reservaInicial.Itens...)
 	r.mu.RUnlock()
 
@@ -582,15 +599,17 @@ func clonarReserva(r dominio.Reserva) dominio.Reserva {
 // estadoLocked cria uma copia do estado atual, pronta para serializar em JSON.
 func (r *Repositorio) estadoLocked() estadoPersistido {
 	e := estadoPersistido{
-		EmpresaID:        r.empresaID,
-		Versao:           2,
-		ProximoIDCarona:  r.proximoIDCarona,
-		ProximoIDReserva: r.proximoIDReserva,
-		Assentos:         make(map[string][]int, len(r.assentos)),
-		Caronas:          make([]dominio.Carona, 0, len(r.caronas)),
-		Reservas:         make([]dominio.Reserva, 0, len(r.reservas)),
-		Usuarios:         make([]dominio.Usuario, 0, len(r.usuarios)),
-		Transacoes:       make([]TransacaoLocal, 0, len(r.transacoes)),
+		EmpresaID:             r.empresaID,
+		Versao:                4,
+		ProximoIDTransacao:    r.proximoIDTransacao,
+		ProximoIDCarona:       r.proximoIDCarona,
+		ProximoIDReserva:      r.proximoIDReserva,
+		Assentos:              make(map[string][]int, len(r.assentos)),
+		Caronas:               make([]dominio.Carona, 0, len(r.caronas)),
+		Reservas:              make([]dominio.Reserva, 0, len(r.reservas)),
+		Usuarios:              make([]dominio.Usuario, 0, len(r.usuarios)),
+		Transacoes:            make([]TransacaoLocal, 0, len(r.transacoes)),
+		TransacoesCoordenadas: make([]TransacaoCoordenada, 0, len(r.transacoesCoordenadas)),
 	}
 	for chave, carona := range r.caronas {
 		e.Caronas = append(e.Caronas, clonarCarona(*carona))
@@ -607,11 +626,15 @@ func (r *Repositorio) estadoLocked() estadoPersistido {
 	for _, transacao := range r.transacoes {
 		e.Transacoes = append(e.Transacoes, clonarTransacao(*transacao))
 	}
+	for _, transacao := range r.transacoesCoordenadas {
+		e.TransacoesCoordenadas = append(e.TransacoesCoordenadas, clonarTransacaoCoordenada(*transacao))
+	}
 
 	sort.Slice(e.Caronas, func(i, j int) bool { return e.Caronas[i].Id < e.Caronas[j].Id })
 	sort.Slice(e.Reservas, func(i, j int) bool { return e.Reservas[i].Id < e.Reservas[j].Id })
 	sort.Slice(e.Usuarios, func(i, j int) bool { return e.Usuarios[i].Usuario < e.Usuarios[j].Usuario })
 	sort.Slice(e.Transacoes, func(i, j int) bool { return e.Transacoes[i].ID < e.Transacoes[j].ID })
+	sort.Slice(e.TransacoesCoordenadas, func(i, j int) bool { return e.TransacoesCoordenadas[i].ID < e.TransacoesCoordenadas[j].ID })
 	return e
 }
 
@@ -667,7 +690,7 @@ func (r *Repositorio) aplicarJSONLocked(conteudo []byte) error {
 	if err := json.Unmarshal(conteudo, &e); err != nil {
 		return err
 	}
-	if e.Versao != 1 && e.Versao != 2 {
+	if e.Versao != 1 && e.Versao != 2 && e.Versao != 3 && e.Versao != 4 {
 		return fmt.Errorf("versao do arquivo JSON nao suportada: %d", e.Versao)
 	}
 
@@ -790,13 +813,85 @@ func (r *Repositorio) aplicarJSONLocked(conteudo []byte) error {
 		transacoes[transacao.ID] = &copia
 	}
 
+	transacoesCoordenadas := make(map[string]*TransacaoCoordenada, len(e.TransacoesCoordenadas))
+	chavesIdempotencia := make(map[string]string)
+	for _, tx := range e.TransacoesCoordenadas {
+		if strings.TrimSpace(tx.ID) == "" || tx.ID != strings.TrimSpace(tx.ID) {
+			return fmt.Errorf("id invalido em transacao coordenada")
+		}
+		if _, repetida := transacoesCoordenadas[tx.ID]; repetida {
+			return fmt.Errorf("id de coordenacao duplicado: %s", tx.ID)
+		}
+		if tx.Passageiro == "" || len(tx.Itinerario.Passos) == 0 || len(tx.Participantes) == 0 {
+			return fmt.Errorf("transacao coordenada %s incompleta", tx.ID)
+		}
+		if chave := strings.TrimSpace(tx.ChaveIdempotencia); chave != "" {
+			if anterior, repetida := chavesIdempotencia[chave]; repetida {
+				return fmt.Errorf("chave de idempotencia duplicada nas coordenacoes %s e %s", anterior, tx.ID)
+			}
+			chavesIdempotencia[chave] = tx.ID
+		}
+		if tx.Estado != CoordenacaoPreparando && tx.Estado != CoordenacaoPendente && tx.Estado != CoordenacaoConcluida {
+			return fmt.Errorf("estado invalido na coordenacao %s: %q", tx.ID, tx.Estado)
+		}
+		if tx.Decisao != DecisaoNenhuma && tx.Decisao != DecisaoConfirmar && tx.Decisao != DecisaoAbortar {
+			return fmt.Errorf("decisao invalida na coordenacao %s: %q", tx.ID, tx.Decisao)
+		}
+		if tx.Estado == CoordenacaoPreparando && tx.Decisao != DecisaoNenhuma {
+			return fmt.Errorf("coordenacao %s em PREPARANDO nao pode ter decisao", tx.ID)
+		}
+		if tx.Estado != CoordenacaoPreparando && tx.Decisao == DecisaoNenhuma {
+			return fmt.Errorf("coordenacao %s precisa de decisao", tx.ID)
+		}
+		idsParticipantes := make(map[string]bool, len(tx.Participantes))
+		for _, participante := range tx.Participantes {
+			if participante.EmpresaID == "" || len(participante.Itinerario.Passos) == 0 || idsParticipantes[participante.EmpresaID] {
+				return fmt.Errorf("participante invalido ou duplicado na coordenacao %s", tx.ID)
+			}
+			idsParticipantes[participante.EmpresaID] = true
+			for _, trecho := range participante.Itinerario.Passos {
+				if trecho.EmpresaID != participante.EmpresaID {
+					return fmt.Errorf("trecho de outra empresa no participante %s da coordenacao %s", participante.EmpresaID, tx.ID)
+				}
+			}
+			if participante.Preparado && !participante.PreparacaoTentada {
+				return fmt.Errorf("ACK de preparacao invalido no participante %s", participante.EmpresaID)
+			}
+			if participante.ConfirmacaoTentada && tx.Decisao != DecisaoConfirmar {
+				return fmt.Errorf("tentativa de confirmacao sem decisao CONFIRMAR em %s", tx.ID)
+			}
+			if participante.Confirmado && (!participante.ConfirmacaoTentada || participante.ReservaID <= 0 || !participante.Preparado) {
+				return fmt.Errorf("ACK de confirmacao invalido no participante %s", participante.EmpresaID)
+			}
+			if participante.AbortoTentado && tx.Decisao != DecisaoAbortar {
+				return fmt.Errorf("tentativa de aborto sem decisao ABORTAR em %s", tx.ID)
+			}
+			if participante.Abortado && !participante.AbortoTentado {
+				return fmt.Errorf("ACK de aborto invalido no participante %s", participante.EmpresaID)
+			}
+			if tx.Decisao == DecisaoConfirmar && !participante.Preparado {
+				return fmt.Errorf("decisao CONFIRMAR sem preparo de %s em %s", participante.EmpresaID, tx.ID)
+			}
+			if tx.Estado == CoordenacaoConcluida && tx.Decisao == DecisaoConfirmar && !participante.Confirmado {
+				return fmt.Errorf("coordenacao %s concluida sem ACK de confirmacao de %s", tx.ID, participante.EmpresaID)
+			}
+			if tx.Estado == CoordenacaoConcluida && tx.Decisao == DecisaoAbortar && participante.PreparacaoTentada && !participante.Abortado {
+				return fmt.Errorf("coordenacao %s concluida sem ACK de aborto de %s", tx.ID, participante.EmpresaID)
+			}
+		}
+		copia := clonarTransacaoCoordenada(tx)
+		transacoesCoordenadas[tx.ID] = &copia
+	}
+
 	r.caronas = caronas
 	r.assentos = assentos
 	r.reservas = reservas
 	r.usuarios = usuarios
 	r.transacoes = transacoes
+	r.transacoesCoordenadas = transacoesCoordenadas
 	r.proximoIDCarona = e.ProximoIDCarona
 	r.proximoIDReserva = e.ProximoIDReserva
+	r.proximoIDTransacao = e.ProximoIDTransacao
 	// Tolera um contador antigo menor que os IDs encontrados, evitando
 	// reutilizar identificadores caso o arquivo tenha sido editado manualmente.
 	for _, carona := range e.Caronas {

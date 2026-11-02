@@ -6,19 +6,38 @@ package main
 
 import (
 	"bufio"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"vaijunto/internal/clientenet"
 	"vaijunto/internal/protocolo"
 )
 
-var proximoID = 0
+var sequenciaFallback uint64
+
+// estadoPersistidoCliente mantém a chave da última tentativa de reserva
+// por assinatura do passageiro + itinerário. A chave sobrevive ao reinício
+// do terminal, permitindo repetir uma solicitação cujo resultado foi perdido.
+type estadoPersistidoCliente struct {
+	ChavesPendentes     map[string]string `json:"chaves_pendentes"`
+	ServidoresPendentes map[string]string `json:"servidores_pendentes,omitempty"`
+}
+
+var estadoCliente = estadoPersistidoCliente{
+	ChavesPendentes:     make(map[string]string),
+	ServidoresPendentes: make(map[string]string),
+}
 
 // ultimaBusca guarda os itinerarios da ultima busca do passageiro, para
 // "confirmar reserva" poder referenciar um deles por indice. E so
@@ -26,6 +45,13 @@ var proximoID = 0
 var ultimaBusca []protocolo.ItinerarioDados
 
 func main() {
+	if err := carregarEstadoCliente(); err != nil {
+		// Falhar fechado evita iniciar uma nova tentativa com outra chave
+		// quando o arquivo anterior não pôde ser lido; isso poderia duplicar
+		// uma reserva cujo resultado ficou desconhecido.
+		log.Fatalf("nao foi possivel carregar estado de idempotencia do cliente: %v", err)
+	}
+
 	// O cliente vai se conectar a um servidor, cujo endereco (host:porta) pode ser passado como argumento de linha de comando. Se nao for, usamos
 	// localhost:8080.
 	endereco := flag.String("servidor", "localhost:8080", "endereco do servidor (host:porta)")
@@ -103,7 +129,7 @@ func cadastrarCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 			// Cadastrar nao loga automaticamente (o servidor so cria o
 			// usuario) — o proprio usuario ja sabe seu role, escolhido
 			// agora mesmo, entao pulamos direto pro menu certo.
-			menu(conexao, leitor, role)
+			menu(conexao, leitor, role, usuario)
 			return
 		}
 		fmt.Printf("\nFalha no cadastro: %s\nTente novamente.\n\n", resp.Motivo)
@@ -140,19 +166,19 @@ func loginCliente(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 			log.Fatal("resposta de login inesperada: ", err)
 		}
 		fmt.Println("\n" + loginResp.Mensagem)
-		menu(conexao, leitor, loginResp.Role)
+		menu(conexao, leitor, loginResp.Role, usuario)
 		return
 	}
 }
 
 // menu direciona para o menu certo conforme o Role devolvido pelo
 // servidor (nunca escolhido livremente pelo cliente depois do login).
-func menu(conexao *clientenet.Conexao, leitor *bufio.Reader, role string) {
+func menu(conexao *clientenet.Conexao, leitor *bufio.Reader, role, usuario string) {
 	switch role {
 	case "m":
 		menuMotorista(conexao, leitor)
 	case "p":
-		menuPassageiro(conexao, leitor)
+		menuPassageiro(conexao, leitor, usuario)
 	default:
 		fmt.Println("Role desconhecido:", role)
 	}
@@ -269,7 +295,7 @@ func cancelarCarona(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	fmt.Println("Carona cancelada.")
 }
 
-func menuPassageiro(conexao *clientenet.Conexao, leitor *bufio.Reader) {
+func menuPassageiro(conexao *clientenet.Conexao, leitor *bufio.Reader, usuario string) {
 	for {
 		fmt.Println("\n--- MENU PASSAGEIRO ---")
 		fmt.Println("1. Buscar itinerários")
@@ -282,7 +308,7 @@ func menuPassageiro(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 		case 1:
 			buscarItinerarios(conexao, leitor)
 		case 2:
-			confirmarReserva(conexao, leitor)
+			confirmarReserva(conexao, leitor, usuario)
 		case 3:
 			consultarReservas(conexao)
 		case 4:
@@ -351,7 +377,7 @@ func buscarItinerarios(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 	}
 }
 
-func confirmarReserva(conexao *clientenet.Conexao, leitor *bufio.Reader) {
+func confirmarReserva(conexao *clientenet.Conexao, leitor *bufio.Reader, usuario string) {
 	// Verifica se há uma busca recente para confirmar reserva. Se não houver, informa o usuário e retorna.
 	if len(ultimaBusca) == 0 {
 		fmt.Println("Busque um itinerário primeiro (opção 1).")
@@ -365,13 +391,24 @@ func confirmarReserva(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 		return
 	}
 
-	// Serializa os dados da confirmação de reserva em JSON, enviando os trechos do itinerário selecionado.
-	dados, _ := json.Marshal(protocolo.ConfirmarReservaDados{Trechos: ultimaBusca[indice].Trechos})
-
-	// Envia a requisição de confirmação de reserva para o servidor e trata a resposta.
-	resp, err := conexao.Enviar(protocolo.Requisicao{Tipo: "confirmar_reserva", IDRequisicao: novoIDRequisicao(), Dados: dados})
+	// A chave e persistida antes do envio. Assim, se a conexao cair ou o
+	// cliente reiniciar, a mesma selecao do mesmo passageiro pode ser repetida.
+	dados, err := json.Marshal(protocolo.ConfirmarReservaDados{Trechos: ultimaBusca[indice].Trechos})
 	if err != nil {
-		fmt.Println("erro de rede:", err)
+		fmt.Println("erro ao preparar reserva:", err)
+		return
+	}
+	chaveSolicitacao := assinaturaReservaCliente(usuario, dados)
+	idRequisicao, err := obterChaveReservaPendente(chaveSolicitacao, conexao.Endereco())
+	if err != nil {
+		fmt.Println("nao foi possivel persistir a chave de idempotencia:", err)
+		return
+	}
+
+	// Em caso de timeout, a chave permanece armazenada para uma nova tentativa.
+	resp, err := conexao.Enviar(protocolo.Requisicao{Tipo: "confirmar_reserva", IDRequisicao: idRequisicao, Dados: dados})
+	if err != nil {
+		fmt.Println("resultado da reserva desconhecido; repita a mesma selecao para consultar a mesma transacao:", err)
 		return
 	}
 	if resp.Status != "ok" {
@@ -379,12 +416,39 @@ func confirmarReserva(conexao *clientenet.Conexao, leitor *bufio.Reader) {
 		return
 	}
 
-	var reserva protocolo.ReservaResposta
-	if err := json.Unmarshal(resp.Dados, &reserva); err != nil {
-		fmt.Println("resposta inesperada do servidor:", err)
+	// A resposta agora descreve a transação coordenada e as reservas locais
+	// criadas por cada empresa participante.
+	var resultado protocolo.CoordenarReservaResposta
+	if err := json.Unmarshal(resp.Dados, &resultado); err != nil || resultado.TransacaoID == "" {
+		// Compatibilidade com servidores que ainda devolvem uma reserva local.
+		var reserva protocolo.ReservaResposta
+		if erro := json.Unmarshal(resp.Dados, &reserva); erro != nil {
+			fmt.Println("resposta inesperada do servidor:", erro)
+			return
+		}
+		fmt.Printf("Reserva local confirmada! ID=%d\n", reserva.ID)
+		removerChaveReservaPendente(chaveSolicitacao)
 		return
 	}
-	fmt.Printf("Reserva confirmada! ID=%d\n", reserva.ID)
+
+	switch resultado.Estado {
+	case "CONFIRMADA":
+		fmt.Printf("Reserva distribuida confirmada! Transacao=%s\n", resultado.TransacaoID)
+		for _, reserva := range resultado.Reservas {
+			fmt.Printf("  Empresa=%s reserva local ID=%d\n", reserva.EmpresaID, reserva.ID)
+		}
+		removerChaveReservaPendente(chaveSolicitacao)
+	case "ABORTADA":
+		fmt.Printf("Reserva abortada. Transacao=%s. Motivo: %s\n", resultado.TransacaoID, resultado.Mensagem)
+		removerChaveReservaPendente(chaveSolicitacao)
+	case "PENDENTE_CONFIRMAR", "PENDENTE_ABORTAR", "PREPARANDO":
+		fmt.Printf("Transacao %s ainda esta pendente (%s). A reserva NAO deve ser considerada confirmada.\n", resultado.TransacaoID, resultado.Estado)
+		if len(resultado.EmpresasPendentes) > 0 {
+			fmt.Printf("Empresas sem ACK: %v\n", resultado.EmpresasPendentes)
+		}
+	default:
+		fmt.Printf("Estado da transacao %s: %s (%s)\n", resultado.TransacaoID, resultado.Estado, resultado.Mensagem)
+	}
 }
 
 func consultarReservas(conexao *clientenet.Conexao) {
@@ -414,13 +478,19 @@ func consultarReservas(conexao *clientenet.Conexao) {
 		for _, t := range r.Trechos {
 			partes = append(partes, fmt.Sprintf("%s->%s (carona %s)", t.Origem, t.Destino, t.IDCarona))
 		}
-		fmt.Printf("  [ID %d] %s\n", r.ID, strings.Join(partes, "  |  "))
+		fmt.Printf("  [Empresa %s | Reserva %d | Transacao %s] %s\n", r.EmpresaID, r.ID, r.TransacaoID, strings.Join(partes, "  |  "))
 	}
 }
 
 func cancelarReserva(conexao *clientenet.Conexao, leitor *bufio.Reader) {
-	id := lerInt(leitor, "ID da reserva a cancelar: ")
-	dados, _ := json.Marshal(protocolo.CancelarReservaDados{IDReserva: id})
+	empresaID := lerLinha(leitor, "Empresa proprietaria da reserva (conforme consulta): ")
+	id := lerInt(leitor, "ID local da reserva: ")
+	transacaoID := lerLinha(leitor, "ID da transacao distribuida (vazio para reserva local antiga): ")
+	dados, _ := json.Marshal(protocolo.CancelarReservaDados{
+		IDReserva:   id,
+		EmpresaID:   empresaID,
+		TransacaoID: transacaoID,
+	})
 
 	resp, err := conexao.Enviar(protocolo.Requisicao{Tipo: "cancelar_reserva", IDRequisicao: novoIDRequisicao(), Dados: dados})
 	if err != nil {
@@ -451,8 +521,134 @@ func lerInt(leitor *bufio.Reader, prompt string) int {
 	}
 }
 
-// novoIDRequisicao gera um ID unico para cada requisicao enviada ao servidor, para que possamos correlacionar respostas com requisicoes.
+func caminhoEstadoCliente() string {
+	if caminho := strings.TrimSpace(os.Getenv("VAIJUNTO_CLIENTE_ESTADO")); caminho != "" {
+		return caminho
+	}
+	return filepath.Join("dados", "cliente_estado.json")
+}
+
+func carregarEstadoCliente() error {
+	conteudo, err := os.ReadFile(caminhoEstadoCliente())
+	if os.IsNotExist(err) {
+		estadoCliente = estadoPersistidoCliente{
+			ChavesPendentes:     make(map[string]string),
+			ServidoresPendentes: make(map[string]string),
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var carregado estadoPersistidoCliente
+	if err := json.Unmarshal(conteudo, &carregado); err != nil {
+		return fmt.Errorf("estado local do cliente invalido: %w", err)
+	}
+	if carregado.ChavesPendentes == nil {
+		carregado.ChavesPendentes = make(map[string]string)
+	}
+	if carregado.ServidoresPendentes == nil {
+		carregado.ServidoresPendentes = make(map[string]string)
+	}
+	estadoCliente = carregado
+	return nil
+}
+
+func salvarEstadoCliente() error {
+	if estadoCliente.ChavesPendentes == nil {
+		estadoCliente.ChavesPendentes = make(map[string]string)
+	}
+	if estadoCliente.ServidoresPendentes == nil {
+		estadoCliente.ServidoresPendentes = make(map[string]string)
+	}
+	conteudo, err := json.MarshalIndent(estadoCliente, "", "  ")
+	if err != nil {
+		return err
+	}
+	caminho := caminhoEstadoCliente()
+	diretorio := filepath.Dir(caminho)
+	if err := os.MkdirAll(diretorio, 0700); err != nil {
+		return err
+	}
+	arquivo, err := os.CreateTemp(diretorio, ".cliente-estado-*.tmp")
+	if err != nil {
+		return err
+	}
+	nomeTemp := arquivo.Name()
+	defer os.Remove(nomeTemp)
+	if err := arquivo.Chmod(0600); err != nil {
+		_ = arquivo.Close()
+		return err
+	}
+	if _, err := arquivo.Write(conteudo); err != nil {
+		_ = arquivo.Close()
+		return err
+	}
+	if err := arquivo.Sync(); err != nil {
+		_ = arquivo.Close()
+		return err
+	}
+	if err := arquivo.Close(); err != nil {
+		return err
+	}
+	return os.Rename(nomeTemp, caminho)
+}
+
+func assinaturaReservaCliente(usuario string, dados []byte) string {
+	entrada := append([]byte(strings.TrimSpace(usuario)+"\n"), dados...)
+	hash := sha256.Sum256(entrada)
+	return hex.EncodeToString(hash[:])
+}
+
+func obterChaveReservaPendente(assinatura, servidor string) (string, error) {
+	servidor = strings.TrimSpace(servidor)
+	if id, existe := estadoCliente.ChavesPendentes[assinatura]; existe {
+		servidorAnterior := estadoCliente.ServidoresPendentes[assinatura]
+		if servidorAnterior != "" && servidor != "" && servidorAnterior != servidor {
+			return "", fmt.Errorf(
+				"esta reserva ainda possui uma tentativa pendente no servidor %s; reconecte-se a esse mesmo servidor para repetir a solicitacao",
+				servidorAnterior,
+			)
+		}
+		if servidorAnterior == "" && servidor != "" {
+			estadoCliente.ServidoresPendentes[assinatura] = servidor
+			if err := salvarEstadoCliente(); err != nil {
+				delete(estadoCliente.ServidoresPendentes, assinatura)
+				return "", err
+			}
+		}
+		return id, nil
+	}
+	id := novoIDRequisicao()
+	estadoCliente.ChavesPendentes[assinatura] = id
+	if servidor != "" {
+		estadoCliente.ServidoresPendentes[assinatura] = servidor
+	}
+	if err := salvarEstadoCliente(); err != nil {
+		delete(estadoCliente.ChavesPendentes, assinatura)
+		delete(estadoCliente.ServidoresPendentes, assinatura)
+		return "", err
+	}
+	return id, nil
+}
+
+func removerChaveReservaPendente(assinatura string) {
+	delete(estadoCliente.ChavesPendentes, assinatura)
+	delete(estadoCliente.ServidoresPendentes, assinatura)
+	if err := salvarEstadoCliente(); err != nil {
+		fmt.Printf("aviso: a reserva foi concluida, mas nao foi possivel limpar a chave local: %v\n", err)
+	}
+}
+
+// novoIDRequisicao gera um identificador praticamente unico entre processos
+// e reinicializacoes. Para confirmar_reserva ele tambem funciona como chave
+// de idempotencia, por isso nao pode reiniciar em "1" a cada cliente.
 func novoIDRequisicao() string {
-	proximoID++
-	return strconv.Itoa(proximoID)
+	var bytes [16]byte
+	if _, err := cryptorand.Read(bytes[:]); err == nil {
+		bytes[6] = (bytes[6] & 0x0f) | 0x40
+		bytes[8] = (bytes[8] & 0x3f) | 0x80
+		return hex.EncodeToString(bytes[:])
+	}
+	return fmt.Sprintf("%x-%d", time.Now().UnixNano(), atomic.AddUint64(&sequenciaFallback, 1))
 }

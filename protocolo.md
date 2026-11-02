@@ -201,6 +201,7 @@ Essa abordagem foi escolhida por ser nativa do Go, simplificar o *parsing* diret
       {
         "trechos": [
           {
+            "empresa_id": "empresa-a",
             "id_carona": "1",
             "indice": 0,
             "origem": "Salvador",
@@ -215,9 +216,11 @@ Essa abordagem foi escolhida por ser nativa do Go, simplificar o *parsing* diret
 
 ### `confirmar_reserva`
 
-**Requisição:** `trechos` (matriz reenviada da busca). O passageiro é extraído da sessão.
+**Requisição:** `trechos` (itinerário reenviado da busca). Cada trecho inclui `empresa_id`, `id_carona`, `indice`, `origem` e `destino`. O passageiro é extraído da sessão.
 
-**Resposta:** Estrutura da reserva confirmada com ID gerado.
+**Idempotência:** `id_requisicao` também funciona como chave da solicitação de reserva. O cliente deve reutilizar o mesmo valor ao repetir uma confirmação cujo resultado ficou desconhecido. O cliente oficial persiste essa chave localmente até receber um estado terminal (`CONFIRMADA` ou `ABORTADA`). Reutilizar a mesma chave com outro passageiro ou itinerário é recusado.
+
+**Resposta:** `CoordenarReservaResposta`, com `transacao_id`, `estado`, `decisao`, partes de reserva (`empresa_id`, `transacao_id` e ID de reserva local) e empresas pendentes. `status: "ok"` no envelope indica que o comando foi processado; não significa sozinho que a reserva global foi concluída. Somente `estado: "CONFIRMADA"` representa conclusão.
 
 **Exemplo:**
 
@@ -229,6 +232,7 @@ Essa abordagem foi escolhida por ser nativa do Go, simplificar o *parsing* diret
   "dados": {
     "trechos": [
       {
+        "empresa_id": "empresa-a",
         "id_carona": "1",
         "indice": 0,
         "origem": "Salvador",
@@ -243,14 +247,24 @@ Essa abordagem foi escolhida por ser nativa do Go, simplificar o *parsing* diret
   "status": "ok",
   "id_requisicao": "6",
   "dados": {
-    "id": 101,
-    "passageiro": "maria",
-    "trechos": [
+    "transacao_id": "empresa-a-1",
+    "estado": "CONFIRMADA",
+    "decisao": "CONFIRMAR",
+    "reservas": [
       {
-        "id_carona": "1",
-        "indice": 0,
-        "origem": "Salvador",
-        "destino": "Feira"
+        "id": 101,
+        "passageiro": "maria",
+        "empresa_id": "empresa-a",
+        "transacao_id": "empresa-a-1",
+        "trechos": [
+          {
+            "empresa_id": "empresa-a",
+            "id_carona": "1",
+            "indice": 0,
+            "origem": "Salvador",
+            "destino": "Feira"
+          }
+        ]
       }
     ]
   }
@@ -261,7 +275,7 @@ Essa abordagem foi escolhida por ser nativa do Go, simplificar o *parsing* diret
 
 **Requisição:** Payload vazio. O passageiro é extraído da sessão.
 
-**Resposta:** Lista das reservas efetuadas pelo usuário.
+**Resposta:** Lista das reservas do usuário no repositório local e, quando o servidor atual é o coordenador da transação, as partes de reservas distribuídas que constam no log coordenado. Cada item informa `empresa_id` e `transacao_id` quando aplicável.
 
 **Exemplo:**
 
@@ -298,9 +312,9 @@ Essa abordagem foi escolhida por ser nativa do Go, simplificar o *parsing* diret
 
 ### `cancelar_reserva`
 
-**Requisição:** `id_reserva`. O usuário é validado no repositório.
+**Requisição:** `id_reserva` e, para identificar a origem do registro, `empresa_id`. O usuário é validado no repositório.
 
-**Resposta:** Mensagem de confirmação e devolução atômica dos assentos aos respectivos contadores.
+**Resposta:** Mensagem de confirmação para reservas locais antigas. O cancelamento de uma parte isolada de uma reserva distribuída é recusado nesta versão, para não liberar apenas um trecho do itinerário. O cancelamento global exige um protocolo distribuído próprio.
 
 **Exemplo:**
 
@@ -372,3 +386,18 @@ carona nao encontrada
 sem assento disponivel no trecho X
 usuario ja cadastrado
 ```
+
+
+## 6. Idempotência e recuperação da confirmação
+
+O servidor usa `id_requisicao` de `confirmar_reserva` como chave de idempotência
+da coordenação. O cliente oficial guarda a associação entre o passageiro +
+itinerário e a chave em `VAIJUNTO_CLIENTE_ESTADO`. Em timeout, deve repetir a
+mesma seleção com a mesma chave; não deve gerar uma nova tentativa.
+
+A empresa coordenadora persiste a decisão antes de distribuí-la. O processo de
+recuperação periódico retoma decisões `CONFIRMAR` e `ABORTAR` sem alterá-las.
+Uma coordenação `PREPARANDO` encontrada após reinicialização, ainda sem decisão
+durável, é abortada segundo a regra de que nenhuma confirmação é enviada antes
+de persistir `CONFIRMAR`. Estados `PENDENTE_CONFIRMAR` e `PENDENTE_ABORTAR` não
+são sucesso terminal.

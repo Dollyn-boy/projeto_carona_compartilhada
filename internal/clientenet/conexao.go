@@ -15,8 +15,9 @@ import (
 
 // Conexao empacota o socket TCP e o bufio.Reader associado a ele.
 type Conexao struct {
-	conn   net.Conn
-	reader *bufio.Reader
+	conn     net.Conn
+	reader   *bufio.Reader
+	endereco string
 }
 
 // Conectar abre uma conexao TCP com o servidor no endereco informado
@@ -29,9 +30,20 @@ func Conectar(endereco string) (*Conexao, error) {
 	}
 
 	return &Conexao{
-		conn:   conn,
-		reader: bufio.NewReader(conn),
+		conn:     conn,
+		reader:   bufio.NewReader(conn),
+		endereco: endereco,
 	}, nil
+}
+
+// Endereco retorna o endereço lógico utilizado para conectar ao servidor.
+// O cliente persiste esse valor junto à chave de idempotência para impedir
+// que uma tentativa pendente seja reenviada a outro coordenador.
+func (c *Conexao) Endereco() string {
+	if c == nil {
+		return ""
+	}
+	return c.endereco
 }
 
 // Fechar encerra a conexao TCP.

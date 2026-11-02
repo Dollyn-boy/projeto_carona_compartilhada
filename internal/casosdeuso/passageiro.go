@@ -3,6 +3,8 @@ package casosdeuso
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"vaijunto/internal/consorcio"
@@ -63,9 +65,14 @@ func reservaParaResposta(r dominio.Reserva) protocolo.ReservaResposta {
 			Destino:   string(item.Trecho.Destino),
 		}
 	}
+	empresaID := ""
+	if len(trechos) > 0 {
+		empresaID = trechos[0].EmpresaID
+	}
 	return protocolo.ReservaResposta{
 		ID:         r.Id,
 		Passageiro: r.Passageiro,
+		EmpresaID:  empresaID,
 		Trechos:    trechos,
 	}
 }
@@ -146,7 +153,12 @@ func tratarBuscarItinerarios(
 }
 
 // tratarConfirmarReserva agora usa o usuario da sessão
-func tratarConfirmarReserva(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
+func tratarConfirmarReserva(
+	repo *estado.Repositorio,
+	usuario string,
+	req protocolo.Requisicao,
+	busca *consorcio.BuscaDistribuida,
+) protocolo.Resposta {
 	var dados protocolo.ConfirmarReservaDados
 
 	// 1. Desserializa os dados da requisição (trechos do itinerário escolhido)
@@ -157,28 +169,83 @@ func tratarConfirmarReserva(repo *estado.Repositorio, usuario string, req protoc
 	// 2. Converte os trechos de []TrechoDados para dominio.Itinerario
 	itinerario := dadosParaItinerario(dados.Trechos)
 
-	// 3. Chama repo.ConfirmarReserva com o usuário da sessão e o itinerário reconstruído
+	// Quando a busca distribuída está configurada, a empresa à qual o
+	// passageiro está conectado coordena esta transação específica.
+	// Sem peers configurados, preservamos o fluxo local legado.
+	if busca != nil && busca.Coordenador != nil {
+		if strings.TrimSpace(req.IDRequisicao) == "" {
+			return erro(req, "id_requisicao obrigatorio para reserva distribuida")
+		}
+		resultado, err := busca.Coordenador.ReservarComChave(
+			context.Background(),
+			usuario,
+			itinerario,
+			req.IDRequisicao,
+		)
+		if err != nil {
+			return erro(req, err.Error())
+		}
+		return ok(req, resultado)
+	}
+
 	reserva, err := repo.ConfirmarReserva(usuario, itinerario)
 	if err != nil {
 		return erro(req, err.Error())
 	}
-
 	return ok(req, reservaParaResposta(reserva))
 }
 
 // tratarConsultarReservas agora busca reservas atreladas à sessão
-func tratarConsultarReservas(repo *estado.Repositorio, usuario string, req protocolo.Requisicao) protocolo.Resposta {
-	// SEGURANÇA: Busca apenas as reservas do usuário logado
+func tratarConsultarReservas(
+	repo *estado.Repositorio,
+	usuario string,
+	req protocolo.Requisicao,
+	busca *consorcio.BuscaDistribuida,
+) protocolo.Resposta {
 	reservas, err := repo.ConsultarReservas(usuario)
 	if err != nil {
 		return erro(req, err.Error())
 	}
 
 	var resposta protocolo.ConsultarReservasResposta
-	for _, r := range reservas {
-		resposta.Reservas = append(resposta.Reservas, reservaParaResposta(r))
+	indices := make(map[string]int)
+	chaveReserva := func(empresaID string, id int) string {
+		return fmt.Sprintf("%s/%d", empresaID, id)
+	}
+	for _, reserva := range reservas {
+		item := reservaParaResposta(reserva)
+		if item.EmpresaID == "" {
+			item.EmpresaID = repo.EmpresaID()
+		}
+		indices[chaveReserva(item.EmpresaID, item.ID)] = len(resposta.Reservas)
+		resposta.Reservas = append(resposta.Reservas, item)
 	}
 
+	// O coordenador mantém o log com os IDs locais das reservas de todos os
+	// participantes. Isso permite mostrar a viagem completa ao passageiro
+	// conectado à empresa que iniciou a coordenação.
+	if busca != nil && busca.Coordenador != nil {
+		for _, tx := range repo.ListarTransacoesCoordenadasDoPassageiro(usuario) {
+			for _, participante := range tx.Participantes {
+				item := protocolo.ReservaResposta{
+					ID:          participante.ReservaID,
+					Passageiro:  tx.Passageiro,
+					EmpresaID:   participante.EmpresaID,
+					TransacaoID: tx.ID,
+					Trechos:     itinerarioParaDados(participante.Itinerario).Trechos,
+				}
+				chave := chaveReserva(item.EmpresaID, item.ID)
+				if indice, existe := indices[chave]; existe {
+					// Substitui a representacao local pela versao enriquecida com
+					// o ID da transacao global.
+					resposta.Reservas[indice] = item
+					continue
+				}
+				indices[chave] = len(resposta.Reservas)
+				resposta.Reservas = append(resposta.Reservas, item)
+			}
+		}
+	}
 	return ok(req, resposta)
 }
 
@@ -188,7 +255,12 @@ func tratarCancelarReserva(repo *estado.Repositorio, usuario string, req protoco
 		return erro(req, "dados invalidos: "+err.Error())
 	}
 
-	// IDEALMENTE: Atualize para repo.CancelarReserva(dados.IDReserva, usuario)
+	if dados.EmpresaID != "" && dados.EmpresaID != repo.EmpresaID() {
+		return erro(req, "esta reserva pertence a outra empresa; conecte-se ao servidor coordenador")
+	}
+	if dados.TransacaoID != "" {
+		return erro(req, "cancelamento de itinerario distribuido ainda nao esta disponivel; nenhuma parte foi cancelada")
+	}
 	if err := repo.CancelarReserva(dados.IDReserva, usuario); err != nil {
 		return erro(req, err.Error())
 	}

@@ -433,8 +433,8 @@ func TestArquivoVersaoUmContinuaSendoCarregado(t *testing.T) {
 	if err := json.Unmarshal(conteudoAtualizado, &atualizado); err != nil {
 		t.Fatal(err)
 	}
-	if atualizado.Versao != 2 {
-		t.Fatalf("arquivo deveria ser atualizado para versão 2; obtida %d", atualizado.Versao)
+	if atualizado.Versao != 4 {
+		t.Fatalf("arquivo deveria ser atualizado para versão 4; obtida %d", atualizado.Versao)
 	}
 }
 

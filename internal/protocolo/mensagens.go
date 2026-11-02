@@ -64,7 +64,9 @@ type ConfirmarReservaDados struct {
 type ConsultarReservasDados struct{}
 
 type CancelarReservaDados struct {
-	IDReserva int `json:"id_reserva"`
+	IDReserva   int    `json:"id_reserva"`
+	EmpresaID   string `json:"empresa_id,omitempty"`
+	TransacaoID string `json:"transacao_id,omitempty"`
 }
 
 type TrechoDados struct {
@@ -108,9 +110,11 @@ type CaronaComOcupacaoResposta struct {
 }
 
 type ReservaResposta struct {
-	ID         int           `json:"id"`
-	Passageiro string        `json:"passageiro"`
-	Trechos    []TrechoDados `json:"trechos"`
+	ID          int           `json:"id"`
+	Passageiro  string        `json:"passageiro"`
+	EmpresaID   string        `json:"empresa_id,omitempty"`
+	TransacaoID string        `json:"transacao_id,omitempty"`
+	Trechos     []TrechoDados `json:"trechos"`
 }
 
 type ConsultarReservasResposta struct {

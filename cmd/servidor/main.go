@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 
 	"vaijunto/internal/api"
 	"vaijunto/internal/consorcio"
@@ -63,27 +68,86 @@ func main() {
 	// Servico responsavel pela busca distribuida.
 	busca := consorcio.NovoBuscaDistribuida(repo, peers)
 
-	// Inicia os dois servidores sem bloquear a inicializacao
-	// de um pelo outro.
-	erros := make(chan error, 2)
+	// Recupera coordenacoes pendentes do arquivo JSON e continua tentando
+	// entregar decisoes duraveis enquanto os peers estiverem indisponiveis.
+	ctx, cancelar := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancelar()
+	var recuperacaoWG sync.WaitGroup
+	recuperacaoWG.Add(1)
+	go func() {
+		defer recuperacaoWG.Done()
+		executarRecuperacao(ctx, busca.Coordenador)
+	}()
 
+	// Inicia as duas interfaces. A rotina de recuperacao e independente dos
+	// listeners: falhas temporarias nos peers nao impedem a API/TCP de subir.
+	erros := make(chan error, 2)
 	go func() {
 		log.Printf("empresa=%s; API REST escutando em %s", empresaID, enderecoREST)
-		erros <- api.Iniciar(enderecoREST, empresaID, repo)
+		erros <- api.IniciarComPeersContext(ctx, enderecoREST, empresaID, repo, peers)
 	}()
-
 	go func() {
 		log.Printf("empresa=%s; servidor TCP escutando em %s", empresaID, enderecoTCP)
-		erros <- rede.IniciarComBusca(enderecoTCP, repo, busca)
+		erros <- rede.IniciarComBuscaContext(ctx, enderecoTCP, repo, busca)
 	}()
 
-	// Se algum servidor parar inesperadamente, encerra o processo
-	// informando o erro.
-	if err := <-erros; err != nil {
-		log.Fatalf("erro ao executar servidor: %v", err)
+	var erroServidor error
+	recebidos := 0
+	select {
+	case <-ctx.Done():
+		log.Printf("empresa=%s; encerramento solicitado; aguardando os listeners", empresaID)
+	case err := <-erros:
+		recebidos++
+		if err != nil {
+			erroServidor = err
+		} else {
+			erroServidor = fmt.Errorf("um listener encerrou inesperadamente sem erro")
+		}
+		cancelar()
 	}
 
-	log.Fatal("um dos servidores foi encerrado inesperadamente")
+	for recebidos < 2 {
+		err := <-erros
+		recebidos++
+		if err != nil {
+			if erroServidor == nil {
+				erroServidor = err
+			} else {
+				log.Printf("erro adicional durante encerramento: %v", err)
+			}
+		}
+	}
+	recuperacaoWG.Wait()
+	if erroServidor != nil {
+		log.Fatalf("servidor encerrado por erro: %v", erroServidor)
+	}
+	log.Printf("empresa=%s; listeners e recuperacao encerrados", empresaID)
+}
+
+// executarRecuperacao tenta imediatamente recuperar o log local e repete a
+// operacao periodicamente. A decisao duravel nunca e alterada durante retry.
+func executarRecuperacao(ctx context.Context, coordenador *consorcio.Coordenador) {
+	const intervalo = 5 * time.Second
+	ticker := time.NewTicker(intervalo)
+	defer ticker.Stop()
+
+	tentar := func() {
+		ctxTentativa, cancelar := context.WithTimeout(ctx, 12*time.Second)
+		defer cancelar()
+		if err := coordenador.RecuperarPendentes(ctxTentativa); err != nil {
+			log.Printf("recuperacao de transacoes pendentes: %v", err)
+		}
+	}
+
+	tentar()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			tentar()
+		}
+	}
 }
 
 // carregarPeers interpreta:

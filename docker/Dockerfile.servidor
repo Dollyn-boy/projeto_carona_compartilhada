@@ -9,6 +9,6 @@ RUN CGO_ENABLED=0 go build -o /servidor ./cmd/servidor
 FROM alpine:latest
 COPY --from=build /servidor /servidor
 
-EXPOSE 8080
+EXPOSE 8080 8085
 
 ENTRYPOINT ["/servidor"]

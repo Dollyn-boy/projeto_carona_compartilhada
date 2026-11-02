@@ -1,25 +1,31 @@
 # QUEM VAI BORA — Sistema de Caronas Compartilhadas
 
-Projeto da disciplina TEC502 (Concorrencia e Conectividade). Servidor
-central com um cliente unico (motorista e passageiro, papel escolhido
-no cadastro/login), comunicando-se por sockets TCP com protocolo de
-aplicacao proprio.
+Projeto da disciplina TEC502 (Concorrencia e Conectividade). Sistema de
+caronas compartilhadas com empresas independentes, cliente TCP e comunicacao
+HTTP/REST entre servidores para busca e coordenacao de reservas distribuidas.
+Cada empresa mantem seu proprio repositorio; a empresa a que o passageiro esta
+conectado coordena somente aquela transacao, sem coordenador central permanente.
 
 ## Arquitetura em camadas do servidor
 
-Cinco camadas, cada uma so conhecendo a que esta logo abaixo:
+Camadas locais do servidor e componentes de integracao distribuida:
 
-  1. Rede (E/S)               -> internal/rede
-  2. Protocolo                -> internal/protocolo
+  1. Rede TCP                  -> internal/rede
+  2. Protocolo de mensagens    -> internal/protocolo
   3. Casos de uso              -> internal/casosdeuso
   4. Dominio + concorrencia    -> internal/dominio + internal/concorrencia
-  5. Estado em memoria          -> internal/estado
+  5. Estado/persistencia       -> internal/estado
+  6. API entre empresas        -> internal/api (HTTP/REST)
+  7. Busca/coordenacao         -> internal/consorcio
+
+A API REST e o pacote consorcio integram instancias independentes. Cada
+empresa continua sendo a unica autoridade sobre seu proprio repositorio.
 
 ## Estrutura do projeto
 
 ```
 cmd/                       pontos de entrada (binarios)
-  servidor/                  bootstrap do servidor central
+  servidor/                  bootstrap de uma instancia/empresa
   cliente/                    cliente unico: cadastro/login, depois menu
                              de motorista ou passageiro conforme o papel
 
@@ -34,15 +40,18 @@ internal/
                              puras (carona, trecho, reserva, usuario, busca
                              de itinerarios — BFS e DFS)
   concorrencia/                camada 4 (parte 2) — travas por trecho
-  estado/                     camada 5 — repositorio, mapas em memoria e
-                             salvamento/carregamento do snapshot JSON
-  clientenet/                  camada de rede do lado do cliente
+  estado/                     camada 5 — repositorio, mapas em memoria,
+                             transacoes locais e logs de coordenacao
+  api/                        endpoints HTTP/REST para comunicacao entre empresas
+  consorcio/                  busca distribuida e coordenador temporario por reserva
+  clientenet/                 camada de rede do lado do cliente
 
 test/carga/                  harness de teste automatizado de concorrencia
                              (multiplos clientes reais via rede, disputando
                              os mesmos trechos)
 docker/                      Dockerfiles do servidor e do cliente
-docs/protocolo.md            especificacao do protocolo de aplicacao
+protocolo.md                 especificacao TCP entre cliente e servidor
+docs/api-consorcio.md        contrato HTTP/REST entre empresas
 ```
 
 
@@ -132,56 +141,102 @@ go run ./cmd/cliente
 O cliente pede pra cadastrar ou autenticar antes de mostrar qualquer
 menu — todas as operacoes privadas exigem sessao autenticada.
 
-## Rodando com Docker
+## Rodando o consorcio com Docker Compose
 
-O cliente aceita o endereco do servidor via flag (`-servidor`, padrao
-`localhost:8080`) — isso existe justamente porque `localhost` dentro de
-um container aponta pro proprio container, nunca pro servidor rodando
-em outro lugar.
-
-### Opcao A — docker-compose (dois containers, mesma maquina)
+O `docker-compose.yml` inicia tres empresas independentes (`servidor-a`,
+`servidor-b` e `servidor-c`) e um cliente conectado inicialmente à empresa A.
+Cada empresa possui seu proprio volume JSON e sua identidade (`VAIJUNTO_EMPRESA_ID`).
+As empresas se comunicam pela API REST na porta 8085 interna; clientes usam TCP
+na porta 8080 interna.
 
 ```bash
-docker compose up --build -d servidor
-docker compose logs servidor          # espere aparecer "servidor escutando em :8080"
+docker compose config
+docker compose up --build -d
+docker compose ps
+docker compose logs -f servidor-a servidor-b servidor-c
+```
+
+Para iniciar um cliente interativo:
+
+```bash
 docker compose run --rm cliente
 ```
 
-O servico do servidor usa o volume nomeado `vaijunto-dados`, montado em
-`/dados`. Assim, o snapshot JSON sobrevive a reinicios e recriacoes do
-container. Evite `docker compose down -v` se quiser preservar os dados, pois
-a opcao `-v` remove tambem os volumes.
+Para conectar um cliente à empresa B ou C:
 
-Dentro da rede que o compose cria, o hostname `servidor` resolve
-sozinho pro container do servico `servidor` — por isso o
-`command: ["-servidor", "servidor:8080"]` no docker-compose.yml
-funciona. Pra simular dois clientes ao mesmo tempo (um motorista, um
-passageiro), rode `docker compose run --rm cliente` de novo em outro
-terminal — cada `run` sobe um container novo, independente.
-
-### Opcao B — dois containers manuais, rede Docker explicita
-
-```
-docker build -f docker/Dockerfile.servidor -t vaijunto-servidor .
-docker build -f docker/Dockerfile.cliente -t vaijunto-cliente .
-
-docker network create vaijunto-net
-docker volume create vaijunto-dados
-docker run --rm -d --network vaijunto-net --name servidor -p 8080:8080 \
-  -e VAIJUNTO_ARQUIVO_DADOS=/dados/dados.json -v vaijunto-dados:/dados vaijunto-servidor
-docker run --rm -it --network vaijunto-net vaijunto-cliente -servidor servidor:8080
+```bash
+docker compose run --rm cliente -servidor servidor-b:8080
+docker compose run --rm cliente -servidor servidor-c:8080
 ```
 
-### Opcao C — maquinas fisicas separadas (o teste real do laboratorio)
+As portas TCP publicadas no host são 8080 (A), 8081 (B) e 8082 (C). A API REST
+usa 8085 dentro da rede Docker. Para testar REST a partir do host, publique
+portas diferentes no host, por exemplo `8085:8085`, `8086:8085` e `8087:8085`.
 
-```
-# Maquina A (roda o servidor)
-docker build -f docker/Dockerfile.servidor -t vaijunto-servidor .
-docker volume create vaijunto-dados
-docker run --rm -p 8080:8080 -e VAIJUNTO_ARQUIVO_DADOS=/dados/dados.json \
-  -v vaijunto-dados:/dados vaijunto-servidor
+Os volumes `vaijunto-a-dados`, `vaijunto-b-dados`, `vaijunto-c-dados` e
+`vaijunto-cliente-dados` preservam os estados dos servidores e as chaves de
+idempotência pendentes do cliente. Evite `docker compose down -v` se quiser
+preservar os dados, pois `-v` remove os volumes nomeados.
 
-# Maquina B (roda o cliente, apontando pro IP real da Maquina A)
-docker build -f docker/Dockerfile.cliente -t vaijunto-cliente .
-docker run --rm -it vaijunto-cliente -servidor 192.168.0.10:8080
+## Variáveis de ambiente importantes
+
+| Variável | Função |
+|---|---|
+| `VAIJUNTO_EMPRESA_ID` | Identidade estável da empresa. |
+| `VAIJUNTO_ENDERECO` | Endereço TCP, normalmente `:8080`. |
+| `VAIJUNTO_REST_ENDERECO` | Endereço HTTP, normalmente `:8085`. |
+| `VAIJUNTO_ARQUIVO_DADOS` | Caminho do JSON persistente da empresa. |
+| `VAIJUNTO_PEERS` | Lista `empresa=url` dos servidores autorizados/conhecidos. |
+| `VAIJUNTO_CLIENTE_ESTADO` | Arquivo local do cliente com chaves de idempotência pendentes. |
+
+Exemplo de peers dentro do Docker:
+
+```text
+VAIJUNTO_PEERS=empresa-b=http://servidor-b:8085,empresa-c=http://servidor-c:8085
 ```
+
+Dentro de um container, use o nome DNS do serviço, não `localhost`, para
+acessar outro servidor. `localhost` sempre aponta para o próprio container.
+
+## Fluxo de reserva distribuída
+
+1. O cliente envia `confirmar_reserva` por TCP ao servidor ao qual está conectado.
+2. Esse servidor gera/persiste um log coordenado e particiona o itinerário por `EmpresaID`.
+3. Cada participante recebe `POST /v1/transacoes/{id}/preparar` e reserva temporariamente seus assentos.
+4. A coordenadora persiste `CONFIRMAR` ou `ABORTAR` antes de distribuir a decisão.
+5. Os participantes executam a decisão localmente e respondem com ACK.
+6. Se a resposta for perdida, as operações podem ser repetidas com o mesmo ID sem duplicar efeitos.
+7. Uma resposta `PENDENTE_CONFIRMAR` ou `PENDENTE_ABORTAR` não é sucesso final. A recuperação automática tenta distribuir novamente a decisão persistida.
+
+A chave de idempotência da solicitação iniciada pelo cliente é persistida no
+volume do cliente. Os logs de coordenação ficam apenas no JSON da empresa que
+coordenou a transação; cada participante guarda sua própria transação local.
+
+## Limitações conhecidas
+
+- O cancelamento de um itinerário distribuído é bloqueado nesta versão para
+  evitar cancelar apenas uma parte da viagem. Cancelamento global requer um
+  protocolo distribuído próprio.
+- A consulta global de partes de uma reserva é oferecida pelo servidor que
+  coordenou a transação e preserva o log correspondente.
+- O cabeçalho `X-VaiJunto-Empresa` identifica o peer declarado, mas não é
+  autenticação criptográfica. Em rede não confiável, use TLS mútuo/credenciais.
+- A recuperação pressupõe que a coordenadora volta a ficar disponível e que
+  seu volume persistente foi preservado. Perda permanente do disco do
+  coordenador exigiria replicação do log/decisão, fora do escopo atual.
+- O protocolo não elimina o bloqueio de participantes PREPARADA quando a
+  coordenadora fica permanentemente inacessível antes de registrar uma decisão.
+
+## Testes locais
+
+```bash
+gofmt -w ./cmd ./internal ./test
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+go build ./...
+```
+
+Os testes automatizados utilizam servidores HTTP de teste (`httptest`) e não
+substituem a validação da rede Docker ou de máquinas físicas separadas.
+

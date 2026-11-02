@@ -105,10 +105,10 @@ func despachar(
 		return tratarBuscarItinerarios(repo, req, busca)
 
 	case "confirmar_reserva":
-		return tratarConfirmarReserva(repo, sessao.Usuario, req)
+		return tratarConfirmarReserva(repo, sessao.Usuario, req, busca)
 
 	case "consultar_reservas":
-		return tratarConsultarReservas(repo, sessao.Usuario, req)
+		return tratarConsultarReservas(repo, sessao.Usuario, req, busca)
 
 	case "cancelar_reserva":
 		return tratarCancelarReserva(repo, sessao.Usuario, req)

@@ -31,6 +31,7 @@ type BuscaDistribuida struct {
 	Repositorio *estado.Repositorio
 	Peers       []Peer
 	HTTP        *http.Client
+	Coordenador *Coordenador
 }
 
 func NovoBuscaDistribuida(
@@ -43,6 +44,7 @@ func NovoBuscaDistribuida(
 		HTTP: &http.Client{
 			Timeout: 3 * time.Second,
 		},
+		Coordenador: NovoCoordenador(repo, peers),
 	}
 }
 
