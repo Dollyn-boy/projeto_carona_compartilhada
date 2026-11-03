@@ -173,8 +173,8 @@ func TestTrechosConsultaRepositorio(t *testing.T) {
 
 	dataEsperada, _ := time.Parse("2006-01-02", "2099-11-15")
 
-	if !repo.dataRecebida.Equal(dataEsperada) {
-		t.Errorf(
+	if !mesmaData(dataEsperada, repo.dataRecebida) {
+		t.Fatalf(
 			"data esperada %v; obtida %v",
 			dataEsperada,
 			repo.dataRecebida,
@@ -204,6 +204,12 @@ func TestTrechosConsultaRepositorio(t *testing.T) {
 	if resposta.Trechos == nil {
 		t.Error("a resposta deveria apresentar uma lista de trechos")
 	}
+}
+
+func mesmaData(a, b time.Time) bool {
+	return a.Year() == b.Year() &&
+		a.Month() == b.Month() &&
+		a.Day() == b.Day()
 }
 
 // TestHealthMetodoNaoPermitido verifica a rejeição de POST
