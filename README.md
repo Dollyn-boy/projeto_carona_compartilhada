@@ -10,6 +10,38 @@ um coordenador central permanente.
 
 ## Arquitetura
 
+docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+
+services:
+  servidor-c:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.servidor
+    ports:
+      - "8080:8080"
+      - "8085:8085"
+    environment:
+      VAIJUNTO_EMPRESA_ID: empresa-c
+      VAIJUNTO_ENDERECO: ":8080"
+      VAIJUNTO_REST_ENDERECO: ":8085"
+      VAIJUNTO_ARQUIVO_DADOS: /dados/empresa-c.json
+      VAIJUNTO_PEERS: empresa-a=http://172.16.201.8:8085,empresa-b=http://172.16.201.6:8085
+    volumes:
+      - vaijunto-c-dados:/dados
+    restart: unless-stopped
+
+  cliente:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cliente
+    command: ["-servidor", "172.16.201.10:8080"]
+    stdin_open: true
+    tty: true
+
+volumes:
+  vaijunto-c-dados:
+
+
 O servidor está organizado em camadas:
 
 ```text
